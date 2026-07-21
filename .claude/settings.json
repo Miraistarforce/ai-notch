@@ -32,7 +32,11 @@
       "Bash(banner -w 20 hi)",
       "Bash(curl -s -m 3 http://127.0.0.1:43110/events)",
       "Bash(python3 -c ' *)",
-      "Bash(bash hooks/install-hooks.sh)"
+      "Bash(bash hooks/install-hooks.sh)",
+      "Bash(security find-identity *)",
+      "Bash(tccutil reset *)",
+      "Bash(codesign -dv dist/AINotch.app)",
+      "Bash(git -c user.name=Miraistarforce -c user.email=miraistarforce@gmail.com commit -q -m '点滅の枠線を削除し背景のみに、Apple Development署名で権限をリビルド後も維持 *)"
     ]
   }
 }

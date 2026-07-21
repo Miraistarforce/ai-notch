@@ -326,7 +326,6 @@ struct SessionRow: View {
         .padding(.horizontal, 10)
         .padding(.vertical, 8)
         .background(rowBackground)
-        .overlay(rowBorder)
         .animation(.easeInOut(duration: 0.4), value: blinkPhase)
         .onHover { hovering = $0 }
     }
@@ -334,16 +333,8 @@ struct SessionRow: View {
     private var rowBackground: some View {
         RoundedRectangle(cornerRadius: 10)
             .fill(
-                session.blinkColor.map { Color(nsColor: $0).opacity(blinkPhase ? 0.22 : 0.06) }
+                session.blinkColor.map { Color(nsColor: $0).opacity(blinkPhase ? 0.30 : 0.08) }
                     ?? (hovering ? Color.white.opacity(0.07) : Color.white.opacity(0.03))
-            )
-    }
-
-    private var rowBorder: some View {
-        RoundedRectangle(cornerRadius: 10)
-            .stroke(
-                session.blinkColor.map { Color(nsColor: $0).opacity(blinkPhase ? 0.9 : 0.25) } ?? Color.clear,
-                lineWidth: session.blinkColor != nil ? 1.5 : 0
             )
     }
 
