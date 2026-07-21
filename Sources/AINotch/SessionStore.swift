@@ -125,6 +125,11 @@ final class SessionStore: ObservableObject {
         sessions.contains { $0.blinkColor != nil && !$0.isOnScreen }
     }
 
+    /// 注意が必要なセッション数（外側クリックで一時的に閉じた後、新しい通知が来たら開き直す判定に使う）
+    var attentionCount: Int {
+        sessions.filter { $0.blinkColor != nil && !$0.isOnScreen }.count
+    }
+
     /// アプリ切り替え時に呼ぶ。点滅中の完了/エラーのセッションの画面を開いたら
     /// 「確認済み」にして点滅を解除する（承認待ちは画面を離れたら再点滅させたいので解除しない）
     func frontmostChanged(_ bundleId: String?) {

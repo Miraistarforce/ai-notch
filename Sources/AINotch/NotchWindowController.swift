@@ -23,6 +23,10 @@ final class NotchWindowController {
     let store: SessionStore
     let ui = UIState()
     private var collapseWork: DispatchWorkItem?
+    /// 外側クリックで一時的に閉じた状態（新しい通知が来るまで自動オープンを抑制）
+    private var dismissed = false
+    private var lastAttentionCount = 0
+    private var outsideClickMonitor: Any?
 
     static let expandedWidth: CGFloat = 680
     static let expandedHeight: CGFloat = 520
@@ -86,6 +90,15 @@ final class NotchWindowController {
         )
         let root = NotchRootView(store: store, ui: ui, actions: actions)
         panel.contentView = NSHostingView(rootView: root)
+
+        // ノッチの外側をクリックしたら閉じる（他アプリへのクリックはグローバルモニターで拾う）
+        outsideClickMonitor = NSEvent.addGlobalMonitorForEvents(
+            matching: [.leftMouseDown, .rightMouseDown]
+        ) { [weak self] _ in
+            guard let self, self.ui.expanded else { return }
+            self.dismissed = true
+            self.setExpanded(false)
+        }
     }
 
     func show() {
@@ -94,6 +107,10 @@ final class NotchWindowController {
     }
 
     func reposition() {
+        applyFrame(expanded: ui.expanded)
+    }
+
+    private func applyFrame(expanded: Bool) {
         guard let screen = targetScreen() else { return }
         var notchWidth: CGFloat = 190
         if let left = screen.auxiliaryTopLeftArea, let right = screen.auxiliaryTopRightArea {
@@ -103,7 +120,7 @@ final class NotchWindowController {
         ui.notchWidth = notchWidth
         ui.barHeight = barHeight
 
-        let size: CGSize = ui.expanded
+        let size: CGSize = expanded
             ? CGSize(width: max(Self.expandedWidth, notchWidth + 2 * Self.sideWidth), height: Self.expandedHeight)
             : CGSize(width: notchWidth + 2 * Self.sideWidth, height: barHeight)
         let f = screen.frame
@@ -117,7 +134,12 @@ final class NotchWindowController {
     }
 
     func refreshPin() {
-        if store.needsAttention {
+        // 新しい通知（点滅対象の増加）が来たら、外側クリックでの一時クローズを解除する
+        let count = store.attentionCount
+        if count > lastAttentionCount { dismissed = false }
+        lastAttentionCount = count
+
+        if count > 0 && !dismissed {
             setExpanded(true)
         } else if !ui.hovering {
             collapseSoon()
@@ -138,7 +160,7 @@ final class NotchWindowController {
         collapseWork?.cancel()
         let work = DispatchWorkItem { [weak self] in
             guard let self else { return }
-            if !self.ui.hovering && !self.store.needsAttention {
+            if !self.ui.hovering && (!self.store.needsAttention || self.dismissed) {
                 self.setExpanded(false)
             }
         }
@@ -148,8 +170,18 @@ final class NotchWindowController {
 
     private func setExpanded(_ e: Bool) {
         guard ui.expanded != e else { return }
-        ui.expanded = e
-        reposition()
+        if e {
+            // 先にウィンドウを広げてから、SwiftUI側で「ノッチから伸びる」アニメーションを再生
+            applyFrame(expanded: true)
+            ui.expanded = true
+        } else {
+            // 縮むアニメーションを見せてからウィンドウを小さくする
+            ui.expanded = false
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.36) { [weak self] in
+                guard let self, !self.ui.expanded else { return }
+                self.applyFrame(expanded: false)
+            }
+        }
     }
 
     private func targetScreen() -> NSScreen? {

@@ -9,13 +9,15 @@ struct NotchRootView: View {
         ZStack(alignment: .top) {
             if ui.expanded {
                 ExpandedPanel(store: store, ui: ui, actions: actions)
+                    .transition(.scale(scale: 0.1, anchor: .top).combined(with: .opacity))
             } else {
                 CollapsedBar(store: store, ui: ui)
+                    .transition(.opacity)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .onHover { actions.hover($0) }
-        .animation(.easeOut(duration: 0.15), value: ui.expanded)
+        .animation(.spring(response: 0.34, dampingFraction: 0.82), value: ui.expanded)
     }
 }
 
@@ -63,8 +65,8 @@ struct CollapsedBar: View {
     @ObservedObject var ui: UIState
 
     var body: some View {
-        TimelineView(.periodic(from: .now, by: 0.9)) { ctx in
-            let phase = Int(ctx.date.timeIntervalSinceReferenceDate / 0.9) % 2 == 0
+        TimelineView(.periodic(from: .now, by: 1.4)) { ctx in
+            let phase = Int(ctx.date.timeIntervalSinceReferenceDate / 1.4) % 2 == 0
             HStack(spacing: 0) {
                 // 左側：セッションごとの状態ドット（点滅対応）
                 HStack(spacing: 5) {
@@ -146,8 +148,8 @@ struct ExpandedPanel: View {
             if store.sessions.isEmpty {
                 emptyState
             } else {
-                TimelineView(.periodic(from: .now, by: 0.9)) { ctx in
-                    let phase = Int(ctx.date.timeIntervalSinceReferenceDate / 0.9) % 2 == 0
+                TimelineView(.periodic(from: .now, by: 1.4)) { ctx in
+                    let phase = Int(ctx.date.timeIntervalSinceReferenceDate / 1.4) % 2 == 0
                     ScrollView {
                         VStack(spacing: 6) {
                             ForEach(folderGroups(store.sessions)) { group in
@@ -164,9 +166,7 @@ struct ExpandedPanel: View {
                 }
             }
 
-            footer
-                .padding(.horizontal, 18)
-                .padding(.vertical, 8)
+            Spacer(minLength: 10)
         }
         .frame(width: NotchWindowController.expandedWidth)
         .frame(maxHeight: NotchWindowController.expandedHeight, alignment: .top)
@@ -222,12 +222,6 @@ struct ExpandedPanel: View {
         .padding(.vertical, 32)
     }
 
-    private var footer: some View {
-        Text("行をクリックでターミナルへ移動 ・ 🔵承認待ち 🟢完了 🔴エラー")
-            .font(.system(size: 10))
-            .foregroundColor(.white.opacity(0.35))
-            .frame(maxWidth: .infinity)
-    }
 }
 
 // MARK: - フォルダグループカード（同一フォルダの複数エージェントを囲う）
@@ -280,22 +274,14 @@ struct SessionRow: View {
     var inGroup = false
     var blinkPhase = true
     @State private var hovering = false
-    /// 承認待ちの詳細（内容＋選択肢）を展開しているか
-    @State private var showDetail = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             headerRow
 
+            // 承認待ちは最初から内容と承認ボタンを展開表示する
             if session.state == .waitingApproval, let p = session.permission {
-                if showDetail {
-                    approvalDetail(p)
-                } else {
-                    Text("クリックで内容と承認ボタンを表示 ・ ダブルクリックで画面へ")
-                        .font(.system(size: 10))
-                        .foregroundColor(.white.opacity(0.45))
-                        .padding(.leading, 18)
-                }
+                approvalDetail(p)
             }
 
             if let q = session.question, session.state == .waitingInput {
@@ -305,13 +291,12 @@ struct SessionRow: View {
         .padding(.horizontal, 10)
         .padding(.vertical, 8)
         .background(rowBackground)
-        .animation(.easeInOut(duration: 0.7), value: blinkPhase)
+        .animation(.easeInOut(duration: 1.1), value: blinkPhase)
         .onHover { hovering = $0 }
     }
 
-    @ViewBuilder
     private var headerRow: some View {
-        let row = HStack(spacing: 10) {
+        HStack(spacing: 10) {
                 Circle()
                     .fill(Color(nsColor: session.blinkColor ?? session.stateColor))
                     .frame(width: 8, height: 8)
@@ -353,16 +338,8 @@ struct SessionRow: View {
                     .buttonStyle(.plain)
                 }
             }
-            .contentShape(Rectangle())
-
-        if session.state == .waitingApproval {
-            // シングルクリック＝詳細の開閉、ダブルクリック＝画面へ移動
-            row
-                .simultaneousGesture(TapGesture(count: 2).onEnded { actions.jump(session) })
-                .onTapGesture { withAnimation(.easeOut(duration: 0.15)) { showDetail.toggle() } }
-        } else {
-            row.onTapGesture { actions.jump(session) }
-        }
+        .contentShape(Rectangle())
+        .onTapGesture { actions.jump(session) }
     }
 
     private var rowBackground: some View {
@@ -393,9 +370,6 @@ struct SessionRow: View {
                     .foregroundColor(Color(nsColor: .systemBlue))
                     .lineLimit(1)
                 Spacer()
-                Text("クリックで閉じる")
-                    .font(.system(size: 9))
-                    .foregroundColor(.white.opacity(0.35))
             }
             if !p.lines.isEmpty {
                 ScrollView {
@@ -421,10 +395,6 @@ struct SessionRow: View {
         }
         .padding(10)
         .background(RoundedRectangle(cornerRadius: 8).fill(Color.blue.opacity(0.08)))
-        .contentShape(Rectangle())
-        .onTapGesture {
-            withAnimation(.easeOut(duration: 0.15)) { showDetail = false }
-        }
     }
 
     private func approvalOption(_ n: Int, _ label: String, accent: Bool = false, action: @escaping () -> Void) -> some View {
