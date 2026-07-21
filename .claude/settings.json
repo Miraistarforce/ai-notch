@@ -1,0 +1,34 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(swift --version)",
+      "Bash(sw_vers)",
+      "WebFetch(domain:vibeisland.app)",
+      "Bash(chmod +x hooks/*.sh hooks/notch-run hooks/notch-report)",
+      "Bash(swift build *)",
+      "Bash(make app *)",
+      "Bash(open dist/AINotch.app)",
+      "Bash(curl -s -m 3 http://127.0.0.1:43110/health)",
+      "Bash(curl -s -m 3 http://127.0.0.1:43110/sessions)",
+      "Bash(curl -s -m 3 -X POST http://127.0.0.1:43110/event -H 'Content-Type: application/json' -d '{\"hook_event_name\":\"SessionStart\",\"session_id\":\"t1\",\"cwd\":\"/Users/yohei/proj/auth-api\",\"term_program\":\"iTerm.app\",\"iterm_session_id\":\"w0t2p0:ABCD-1234\"}')",
+      "Bash(curl -s -m 3 -X POST http://127.0.0.1:43110/event -H 'Content-Type: application/json' -d '{\"hook_event_name\":\"UserPromptSubmit\",\"session_id\":\"t1\",\"prompt\":\"認証バグをmiddlewareで修正して\",\"cwd\":\"/Users/yohei/proj/auth-api\"}')",
+      "Bash(curl -s -m 3 -X POST http://127.0.0.1:43110/event -H 'Content-Type: application/json' -d '{\"hook_event_name\":\"PreToolUse\",\"session_id\":\"t1\",\"tool_name\":\"Edit\",\"tool_input\":{\"file_path\":\"src/auth/middleware.ts\",\"old_string\":\"jwt.verify\\(token\\);\",\"new_string\":\"if \\(!token\\) throw new AuthError\\(\\\\\"missing\\\\\"\\);\\\\nreturn jwt.verify\\(token\\);\"}}')",
+      "Bash(curl -s -m 3 -X POST http://127.0.0.1:43110/event -H 'Content-Type: application/json' -d '{\"hook_event_name\":\"Notification\",\"session_id\":\"t1\",\"message\":\"Claude needs your permission to use Edit\"}')",
+      "Bash(curl -s -m 3 -X POST http://127.0.0.1:43110/event -H 'Content-Type: application/json' -d '{\"event\":\"start\",\"session_id\":\"t2\",\"title\":\"クエリの最適化\",\"agent\":\"Gemini\",\"term_program\":\"ghostty\"}')",
+      "Bash(screencapture -x /private/tmp/claude-501/-Users-yohei-Konosuke------------apps-mac-ai-notch/36805a73-c970-4e90-9b50-c29de7f73b83/scratchpad/notch-test.png)",
+      "Bash(sips -Z 1600 notch-test.png --out notch-test-small.png)",
+      "Bash(sips -g pixelWidth -g pixelHeight notch-test-small.png)",
+      "Bash(system_profiler SPDisplaysDataType)",
+      "Bash(log show *)",
+      "Bash(pkill -f AINotch.app)",
+      "Bash(curl -s -m 3 http://127.0.0.1:43110/debug)",
+      "Bash(curl -s -m 3 -X POST http://127.0.0.1:43110/event -H 'Content-Type: application/json' -d '{\"hook_event_name\":\"SessionStart\",\"session_id\":\"t1\",\"cwd\":\"/Users/yohei/proj/auth-api\",\"term_program\":\"iTerm.app\"}')",
+      "Bash(curl -s -m 3 -X POST http://127.0.0.1:43110/event -H 'Content-Type: application/json' -d '{\"hook_event_name\":\"UserPromptSubmit\",\"session_id\":\"t1\",\"prompt\":\"認証バグをmiddlewareで修正して\"}')",
+      "Bash(curl -s -m 3 -X POST http://127.0.0.1:43110/event -H 'Content-Type: application/json' -d '{\"hook_event_name\":\"PreToolUse\",\"session_id\":\"t1\",\"tool_name\":\"Edit\",\"tool_input\":{\"file_path\":\"src/auth/middleware.ts\",\"old_string\":\"jwt.verify\\(token\\);\",\"new_string\":\"if \\(!token\\) throw new AuthError\\(\\\\\"missing\\\\\"\\);\"}}')",
+      "Bash(screencapture -x notch-test2.png)",
+      "Bash(sips -Z 1600 notch-test2.png --out notch-test2-small.png)",
+      "Bash(bash \"/Users/yohei/Konosuke/ミライスターフォース/apps/mac-ai-notch/hooks/install-hooks.sh\")",
+      "Bash(curl -s -m 2 -X POST http://127.0.0.1:43110/event -H 'Content-Type: application/json' -d '{\"event\":\"remove\",\"session_id\":\"hooktest-1\"}')"
+    ]
+  }
+}

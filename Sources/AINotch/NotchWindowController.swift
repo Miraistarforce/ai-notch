@@ -1,0 +1,158 @@
+import AppKit
+import SwiftUI
+
+final class UIState: ObservableObject {
+    @Published var expanded = false
+    @Published var hovering = false
+    @Published var notchWidth: CGFloat = 190
+    @Published var barHeight: CGFloat = 34
+}
+
+struct NotchActions {
+    var hover: (Bool) -> Void
+    var jump: (AgentSession) -> Void
+    var allow: (AgentSession) -> Void
+    var deny: (AgentSession) -> Void
+    var answer: (AgentSession, Int) -> Void
+}
+
+final class NotchWindowController {
+    let panel: NSPanel
+    let store: SessionStore
+    let ui = UIState()
+    private var collapseWork: DispatchWorkItem?
+
+    static let expandedWidth: CGFloat = 680
+    static let expandedHeight: CGFloat = 520
+    static let sideWidth: CGFloat = 130
+
+    init(store: SessionStore) {
+        self.store = store
+        panel = NSPanel(
+            contentRect: .zero,
+            styleMask: [.borderless, .nonactivatingPanel],
+            backing: .buffered,
+            defer: false
+        )
+        panel.level = .statusBar
+        panel.isOpaque = false
+        panel.backgroundColor = .clear
+        panel.hasShadow = false
+        panel.hidesOnDeactivate = false
+        panel.isMovable = false
+        panel.becomesKeyOnlyIfNeeded = true
+        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
+
+        let actions = NotchActions(
+            hover: { [weak self] inside in self?.hoverChanged(inside) },
+            jump: { [weak self] s in
+                TerminalControl.jump(s)
+                self?.collapseSoon()
+            },
+            allow: { [weak self] s in
+                TerminalControl.approve(s)
+                self?.store.markDecisionSent(s.id, text: "許可を送信しました…")
+            },
+            deny: { [weak self] s in
+                TerminalControl.deny(s)
+                self?.store.markDecisionSent(s.id, text: "拒否を送信しました…")
+            },
+            answer: { [weak self] s, i in
+                TerminalControl.answer(s, option: i)
+                self?.store.markDecisionSent(s.id, text: "回答 \(i) を送信しました…")
+            }
+        )
+        let root = NotchRootView(store: store, ui: ui, actions: actions)
+        panel.contentView = NSHostingView(rootView: root)
+    }
+
+    func show() {
+        reposition()
+        panel.orderFrontRegardless()
+    }
+
+    func reposition() {
+        guard let screen = targetScreen() else { return }
+        var notchWidth: CGFloat = 190
+        if let left = screen.auxiliaryTopLeftArea, let right = screen.auxiliaryTopRightArea {
+            notchWidth = screen.frame.width - left.width - right.width
+        }
+        let barHeight = screen.safeAreaInsets.top > 0 ? screen.safeAreaInsets.top : 36
+        ui.notchWidth = notchWidth
+        ui.barHeight = barHeight
+
+        let size: CGSize = ui.expanded
+            ? CGSize(width: max(Self.expandedWidth, notchWidth + 2 * Self.sideWidth), height: Self.expandedHeight)
+            : CGSize(width: notchWidth + 2 * Self.sideWidth, height: barHeight)
+        let f = screen.frame
+        let rect = NSRect(
+            x: (f.midX - size.width / 2).rounded(),
+            y: f.maxY - size.height,
+            width: size.width,
+            height: size.height
+        )
+        panel.setFrame(rect, display: true)
+    }
+
+    func refreshPin() {
+        if store.hasPending {
+            setExpanded(true)
+        } else if !ui.hovering {
+            collapseSoon()
+        }
+    }
+
+    private func hoverChanged(_ inside: Bool) {
+        ui.hovering = inside
+        if inside {
+            collapseWork?.cancel()
+            setExpanded(true)
+        } else {
+            collapseSoon()
+        }
+    }
+
+    private func collapseSoon() {
+        collapseWork?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            if !self.ui.hovering && !self.store.hasPending {
+                self.setExpanded(false)
+            }
+        }
+        collapseWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4, execute: work)
+    }
+
+    private func setExpanded(_ e: Bool) {
+        guard ui.expanded != e else { return }
+        ui.expanded = e
+        reposition()
+    }
+
+    private func targetScreen() -> NSScreen? {
+        NSScreen.screens.first { $0.safeAreaInsets.top > 0 } ?? NSScreen.main
+    }
+
+    func debugJSON() -> Data {
+        var screens: [[String: Any]] = []
+        for s in NSScreen.screens {
+            screens.append([
+                "frame": NSStringFromRect(s.frame),
+                "safeTop": s.safeAreaInsets.top,
+                "notchLeft": s.auxiliaryTopLeftArea.map(NSStringFromRect) ?? "nil",
+                "notchRight": s.auxiliaryTopRightArea.map(NSStringFromRect) ?? "nil",
+            ])
+        }
+        let info: [String: Any] = [
+            "panelFrame": NSStringFromRect(panel.frame),
+            "panelVisible": panel.isVisible,
+            "panelAlpha": panel.alphaValue,
+            "expanded": ui.expanded,
+            "notchWidth": ui.notchWidth,
+            "barHeight": ui.barHeight,
+            "screens": screens,
+        ]
+        return (try? JSONSerialization.data(withJSONObject: info, options: [.prettyPrinted])) ?? Data("{}".utf8)
+    }
+}

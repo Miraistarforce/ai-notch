@@ -1,0 +1,57 @@
+#!/bin/bash
+# 任意のスクリプトから AI Notch に状況を報告するCLI。
+#   notch-report start "バックエンド改修" --agent Codex --id my-task
+#   notch-report status "テスト実行中" --id my-task
+#   notch-report done "完了しました" --id my-task
+#   notch-report remove --id my-task
+
+DIR="$(cd "$(dirname "$0")" && pwd)"
+
+event="$1"
+shift || true
+text=""
+if [ $# -gt 0 ] && [ "${1#--}" = "$1" ]; then
+  text="$1"
+  shift
+fi
+
+agent=""
+sid=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --agent) agent="$2"; shift 2 ;;
+    --id) sid="$2"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+
+case "$event" in
+  start|status|done|remove) ;;
+  *)
+    echo "使い方: notch-report <start|status|done|remove> [テキスト] [--agent 名前] [--id ID]" >&2
+    exit 1
+    ;;
+esac
+
+[ -z "$sid" ] && sid="report-$PPID"
+
+title=""
+status=""
+if [ "$event" = "start" ]; then
+  title="$text"
+else
+  status="$text"
+fi
+
+TTY_NAME=$(ps -o tty= -p $$ 2>/dev/null | tr -d ' ')
+if [ -n "$TTY_NAME" ] && [ "$TTY_NAME" != "??" ]; then
+  NH_TTY="/dev/$TTY_NAME"
+else
+  NH_TTY=""
+fi
+
+NH_EVENT="$event" NH_SID="$sid" NH_TITLE="$title" NH_AGENT="$agent" NH_STATUS="$status" \
+  NH_TTY="$NH_TTY" NH_PORT="${NOTCH_PORT:-43110}" \
+  python3 "$DIR/notch_post.py" >/dev/null 2>&1
+
+exit 0
