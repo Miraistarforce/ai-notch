@@ -1,0 +1,51 @@
+#!/bin/bash
+# 任意のCLIエージェントをノッチ監視付きで起動するラッパー。
+#   使い方: notch-run codex
+#           notch-run gemini
+#           NOTCH_TITLE="クエリ最適化" notch-run gemini
+# 開始時に「実行中」、終了時に「完了」を AI Notch に通知する。
+
+if [ $# -eq 0 ]; then
+  echo "使い方: notch-run <コマンド> [引数...]" >&2
+  exit 1
+fi
+
+DIR="$(cd "$(dirname "$0")" && pwd)"
+
+name=$(basename "$1")
+case "$name" in
+  codex) agent="Codex" ;;
+  gemini) agent="Gemini" ;;
+  claude) agent="Claude" ;;
+  cursor|cursor-agent) agent="Cursor" ;;
+  *) agent="$name" ;;
+esac
+
+sid="run-$$"
+title="${NOTCH_TITLE:-$agent: $(basename "$PWD")}"
+
+TTY_NAME=$(ps -o tty= -p $$ 2>/dev/null | tr -d ' ')
+if [ -n "$TTY_NAME" ] && [ "$TTY_NAME" != "??" ]; then
+  NH_TTY="/dev/$TTY_NAME"
+else
+  NH_TTY=""
+fi
+export NH_TTY NH_PORT="${NOTCH_PORT:-43110}"
+
+NH_EVENT="start" NH_SID="$sid" NH_TITLE="$title" NH_AGENT="$agent" \
+  python3 "$DIR/notch_post.py" >/dev/null 2>&1
+
+"$@"
+code=$?
+
+if [ $code -eq 0 ]; then
+  event="done"
+  status="完了 — クリックで移動"
+else
+  event="error"
+  status="エラー終了（コード $code）"
+fi
+NH_EVENT="$event" NH_SID="$sid" NH_TITLE="$title" NH_AGENT="$agent" NH_STATUS="$status" \
+  python3 "$DIR/notch_post.py" >/dev/null 2>&1
+
+exit $code
