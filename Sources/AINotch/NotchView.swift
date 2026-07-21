@@ -86,10 +86,11 @@ struct CollapsedBar: View {
                             Circle().fill(Color.gray.opacity(0.6)).frame(width: 6, height: 6)
                         } else {
                             ForEach(store.sessions.prefix(4)) { s in
+                                let blinkColor = s.blinkColor
                                 Circle()
-                                    .fill(Color(nsColor: s.blinkColor ?? s.stateColor))
+                                    .fill(Color(nsColor: blinkColor ?? s.stateColor))
                                     .frame(width: 6, height: 6)
-                                    .opacity(s.blinkColor != nil && !phase ? 0.25 : 1.0)
+                                    .opacity(blinkColor != nil && !phase ? 0.25 : 1.0)
                             }
                         }
                     }
@@ -288,8 +289,9 @@ struct SessionRow: View {
     @State private var hovering = false
 
     var body: some View {
+        let blinkColor = session.blinkColor
         VStack(alignment: .leading, spacing: 8) {
-            headerRow
+            headerRow(blinkColor: blinkColor)
 
             // 承認待ちは最初から内容と承認ボタンを展開表示する
             if session.state == .waitingApproval, let p = session.permission {
@@ -302,17 +304,17 @@ struct SessionRow: View {
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 8)
-        .background(rowBackground)
+        .background(rowBackground(blinkColor: blinkColor))
         .animation(.easeInOut(duration: 1.1), value: blinkPhase)
         .onHover { hovering = $0 }
     }
 
-    private var headerRow: some View {
+    private func headerRow(blinkColor: NSColor?) -> some View {
         HStack(spacing: 10) {
                 Circle()
-                    .fill(Color(nsColor: session.blinkColor ?? session.stateColor))
+                    .fill(Color(nsColor: blinkColor ?? session.stateColor))
                     .frame(width: 8, height: 8)
-                    .opacity(session.blinkColor != nil && !blinkPhase ? 0.25 : 1.0)
+                    .opacity(blinkColor != nil && !blinkPhase ? 0.25 : 1.0)
 
                 VStack(alignment: .leading, spacing: 3) {
                     Text(inGroup ? session.agentLabel : session.title)
@@ -354,10 +356,10 @@ struct SessionRow: View {
         .onTapGesture { actions.jump(session) }
     }
 
-    private var rowBackground: some View {
+    private func rowBackground(blinkColor: NSColor?) -> some View {
         RoundedRectangle(cornerRadius: 10)
             .fill(
-                session.blinkColor.map { Color(nsColor: $0).opacity(blinkPhase ? 0.30 : 0.08) }
+                blinkColor.map { Color(nsColor: $0).opacity(blinkPhase ? 0.30 : 0.08) }
                     ?? (hovering ? Color.white.opacity(0.07) : Color.white.opacity(0.03))
             )
     }

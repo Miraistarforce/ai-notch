@@ -1,7 +1,7 @@
 #!/bin/bash
 # Codex CLI の notify 設定から呼ばれるスクリプト。
 # ~/.codex/config.toml に以下を追記して使う:
-#   notify = ["bash", "/Users/yohei/Konosuke/ミライスターフォース/apps/mac-ai-notch/hooks/codex-notify.sh"]
+#   notify = ["bash", "/path/to/mac-ai-notch/hooks/codex-notify.sh"]
 # Codex はターン完了時などにJSONを引数で渡してくる。
 
 DIR="$(cd "$(dirname "$0")" && pwd)"

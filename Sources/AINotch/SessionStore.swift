@@ -99,6 +99,11 @@ struct AgentSession: Identifiable {
 }
 
 final class SessionStore: ObservableObject {
+    private struct HookDecision {
+        let sessionId: String
+        let value: String
+    }
+
     @Published var sessions: [AgentSession] = []
     /// 状態変化のたびに呼ばれる（パネルの開閉判定用）
     var onChange: (() -> Void)?
@@ -106,15 +111,20 @@ final class SessionStore: ObservableObject {
     /// 実行中のままこの秒数イベントが来なければエラー扱いにする
     private let staleSeconds: TimeInterval = 600
     private var tickTimer: Timer?
-    /// PermissionRequest hookへ渡す決定（セッションID → allow/allow_always/deny/defer）
-    private var decisions: [String: String] = [:]
+    /// PermissionRequest hookへ渡す決定（決定キー → セッションIDと決定値）
+    private var decisions: [String: HookDecision] = [:]
 
     init() {
         // 定期チェック：無応答検知＋点滅の期限切れでパネルを閉じる判定を更新
         tickTimer = Timer.scheduledTimer(withTimeInterval: 15, repeats: true) { [weak self] _ in
-            self?.checkStale()
-            self?.onChange?()
+            guard let self else { return }
+            self.checkStale()
+            self.onChange?()
         }
+    }
+
+    deinit {
+        tickTimer?.invalidate()
     }
 
     /// パネルを開いたままにすべき状態。
@@ -122,12 +132,16 @@ final class SessionStore: ObservableObject {
     /// ユーザーが今その画面を見ていないものが1つでもあれば true。
     /// → 全ての点滅が解除された時点でパネルは自動で閉じる。
     var needsAttention: Bool {
-        sessions.contains { $0.blinkColor != nil && !$0.isOnScreen }
+        let frontmostBundleId = NSWorkspace.shared.frontmostApplication?.bundleIdentifier
+        return sessions.contains { $0.blinkColor != nil && !Self.isOnScreen($0, frontmostBundleId: frontmostBundleId) }
     }
 
     /// 注意が必要なセッション数（外側クリックで一時的に閉じた後、新しい通知が来たら開き直す判定に使う）
     var attentionCount: Int {
-        sessions.filter { $0.blinkColor != nil && !$0.isOnScreen }.count
+        let frontmostBundleId = NSWorkspace.shared.frontmostApplication?.bundleIdentifier
+        return sessions.lazy
+            .filter { $0.blinkColor != nil && !Self.isOnScreen($0, frontmostBundleId: frontmostBundleId) }
+            .count
     }
 
     /// Clawdアニメーションの状態（優先度: エラー > 承認待ち > 完了の喜び > 作業中 > 散歩 > 待機）
@@ -154,19 +168,24 @@ final class SessionStore: ObservableObject {
             onChange?()
             return
         }
-        for i in sessions.indices {
-            let s = sessions[i]
+        var updated = sessions
+        var sessionsChanged = false
+        for i in updated.indices {
+            let s = updated[i]
             if s.hostBundleId == bid, !s.acknowledged, s.state == .done || s.state == .error {
-                sessions[i].acknowledged = true
+                updated[i].acknowledged = true
+                sessionsChanged = true
             }
             // 承認待ちのセッションの画面を開いたら、hookを解放して
             // 通常の承認ダイアログをその画面に出す（ユーザーが直接答えられるように）
             if s.hostBundleId == bid, s.state == .waitingApproval, s.awaitingHookDecision {
-                decisions[decisionKey(s.id, s.promptId)] = "defer"
-                sessions[i].awaitingHookDecision = false
-                sessions[i].statusText = "画面のダイアログで回答してください"
+                decisions[decisionKey(s.id, s.promptId)] = HookDecision(sessionId: s.id, value: "defer")
+                updated[i].awaitingHookDecision = false
+                updated[i].statusText = "画面のダイアログで回答してください"
+                sessionsChanged = true
             }
         }
+        if sessionsChanged { sessions = updated }
         onChange?()
     }
 
@@ -176,63 +195,76 @@ final class SessionStore: ObservableObject {
         promptId.isEmpty ? sid : "\(sid):\(promptId)"
     }
 
+    private static func isOnScreen(_ session: AgentSession, frontmostBundleId: String?) -> Bool {
+        let hostBundleId = session.hostBundleId
+        return !hostBundleId.isEmpty && hostBundleId == frontmostBundleId
+    }
+
     /// ノッチのボタンから決定を登録する。hookがポーリングで受け取り、Claude Codeに直接返す。
     func decide(_ id: String, decision: String) {
         guard let i = sessions.firstIndex(where: { $0.id == id }) else {
-            decisions[id] = decision
+            decisions[id] = HookDecision(sessionId: id, value: decision)
             onChange?()
             return
         }
-        decisions[decisionKey(id, sessions[i].promptId)] = decision
+        var session = sessions[i]
+        decisions[decisionKey(id, session.promptId)] = HookDecision(sessionId: id, value: decision)
         switch decision {
         case "allow":
-            sessions[i].state = .working
-            sessions[i].statusText = "許可しました — 実行中…"
+            session.state = .working
+            session.statusText = "許可しました — 実行中…"
         case "allow_always":
-            sessions[i].state = .working
-            sessions[i].statusText = "許可しました（今後は確認なし）"
+            session.state = .working
+            session.statusText = "許可しました（今後は確認なし）"
         case "deny":
-            sessions[i].state = .working
-            sessions[i].statusText = "拒否しました"
+            session.state = .working
+            session.statusText = "拒否しました"
         default:
             break
         }
         if decision != "defer" {
-            sessions[i].permission = nil
-            sessions[i].question = nil
+            session.permission = nil
+            session.question = nil
+            session.awaitingHookDecision = false
         }
+        sessions[i] = session
         onChange?()
     }
 
     /// hookのポーリングに応答する。決定があれば取り出して返す（1回限り）。
     /// key は「セッションID」または「セッションID:プロンプトID」。
     func takeDecision(_ key: String) -> String? {
-        guard let d = decisions[key] else { return nil }
+        guard let decision = decisions[key] else { return nil }
         decisions.removeValue(forKey: key)
-        let sid = String(key.split(separator: ":", maxSplits: 1).first ?? "")
-        if let i = sessions.firstIndex(where: { $0.id == sid || $0.id == key }) {
-            sessions[i].awaitingHookDecision = false
+        if let i = sessions.firstIndex(where: { $0.id == decision.sessionId }),
+           sessions[i].awaitingHookDecision {
+            var session = sessions[i]
+            session.awaitingHookDecision = false
+            sessions[i] = session
         }
-        return d
+        return decision.value
     }
-    var workingCount: Int { sessions.filter { $0.state == .working }.count }
-    var pendingCount: Int { sessions.filter { $0.state == .waitingApproval || $0.state == .waitingInput }.count }
-    var doneCount: Int { sessions.filter { $0.state == .done }.count }
-    var errorCount: Int { sessions.filter { $0.state == .error }.count }
+    var workingCount: Int { sessions.lazy.filter { $0.state == .working }.count }
+    var pendingCount: Int { sessions.lazy.filter { $0.state == .waitingApproval || $0.state == .waitingInput }.count }
+    var doneCount: Int { sessions.lazy.filter { $0.state == .done }.count }
+    var errorCount: Int { sessions.lazy.filter { $0.state == .error }.count }
 
     // MARK: - イベント処理
 
     func handle(_ dict: [String: Any]) {
-        let ev = str(dict["hook_event_name"]).isEmpty ? str(dict["event"]) : str(dict["hook_event_name"])
+        let hookEvent = str(dict["hook_event_name"])
+        let ev = hookEvent.isEmpty ? str(dict["event"]) : hookEvent
         guard !ev.isEmpty else { return }
-        let sid = str(dict["session_id"]).isEmpty ? "unknown" : str(dict["session_id"])
+        let rawSessionId = str(dict["session_id"])
+        let sid = rawSessionId.isEmpty ? "unknown" : rawSessionId
 
         var s = sessions.first(where: { $0.id == sid }) ?? newSession(id: sid, dict: dict)
         updateEnvironment(&s, dict: dict)
-        s.updatedAt = Date()
+        let now = Date()
+        s.updatedAt = now
 
         // Claude Code hooks経由のセッションは、開いているフォルダ名をタイトルにする
-        if !str(dict["hook_event_name"]).isEmpty, !s.cwd.isEmpty {
+        if !hookEvent.isEmpty, !s.cwd.isEmpty {
             s.title = (s.cwd as NSString).lastPathComponent
         }
 
@@ -275,7 +307,7 @@ final class SessionStore: ObservableObject {
             decisions.removeValue(forKey: decisionKey(sid, s.promptId))
             if s.isOnScreen {
                 // 画面を見ているならノッチは介入せず、すぐ通常のダイアログを出す
-                decisions[decisionKey(sid, s.promptId)] = "defer"
+                decisions[decisionKey(sid, s.promptId)] = HookDecision(sessionId: sid, value: "defer")
                 s.awaitingHookDecision = false
             } else {
                 playSound("Ping")
@@ -305,7 +337,7 @@ final class SessionStore: ObservableObject {
             s.acknowledged = false
             playSound("Glass")
         case "SessionEnd":
-            sessions.removeAll { $0.id == sid }
+            removeSession(id: sid)
             onChange?()
             return
         // 汎用イベント（notch-run / notch-report / codex-notify 用）
@@ -331,55 +363,62 @@ final class SessionStore: ObservableObject {
             s.acknowledged = false
             playSound("Basso")
         case "remove":
-            sessions.removeAll { $0.id == sid }
+            removeSession(id: sid)
             onChange?()
             return
         default:
             break
         }
 
-        upsert(s)
-        purge()
-        sortSessions()
+        upsertAndMaintain(s, now: now)
         onChange?()
     }
 
     func clearFinished() {
-        sessions.removeAll { $0.state == .done || $0.state == .idle }
+        let remaining = sessions.filter { $0.state != .done && $0.state != .idle }
+        guard remaining.count != sessions.count else { return }
+        sessions = remaining
+        onChange?()
     }
 
     /// 操作送信後の楽観的更新（キー送信がターミナル側で処理される想定）
     func markDecisionSent(_ id: String, text: String) {
         guard let i = sessions.firstIndex(where: { $0.id == id }) else { return }
-        sessions[i].state = .working
-        sessions[i].statusText = text
-        sessions[i].permission = nil
-        sessions[i].question = nil
+        var session = sessions[i]
+        session.state = .working
+        session.statusText = text
+        session.permission = nil
+        session.question = nil
+        sessions[i] = session
         onChange?()
     }
 
     /// 行クリックで確認済みにする（点滅・自動オープンを止める）
     func acknowledge(_ id: String) {
-        guard let i = sessions.firstIndex(where: { $0.id == id }) else { return }
-        sessions[i].acknowledged = true
+        guard let i = sessions.firstIndex(where: { $0.id == id }), !sessions[i].acknowledged else { return }
+        var session = sessions[i]
+        session.acknowledged = true
+        sessions[i] = session
         onChange?()
     }
 
     /// 実行中のまま長時間イベントが来ないセッションをエラー扱いにする
     private func checkStale() {
+        let now = Date()
+        var updated = sessions
         var changed = false
-        for i in sessions.indices where sessions[i].state == .working {
-            if Date().timeIntervalSince(sessions[i].updatedAt) > staleSeconds {
-                sessions[i].state = .error
-                sessions[i].statusText = "応答が停止しています（エラー/API制限の可能性）"
-                sessions[i].acknowledged = false
+        for i in updated.indices where updated[i].state == .working {
+            if now.timeIntervalSince(updated[i].updatedAt) > staleSeconds {
+                updated[i].state = .error
+                updated[i].statusText = "応答が停止しています（エラー/API制限の可能性）"
+                updated[i].acknowledged = false
                 changed = true
             }
         }
         if changed {
+            sortSessions(&updated)
+            sessions = updated
             playSound("Basso")
-            sortSessions()
-            onChange?()
         }
     }
 
@@ -396,12 +435,15 @@ final class SessionStore: ObservableObject {
     // MARK: - 内部処理
 
     private func newSession(id: String, dict: [String: Any]) -> AgentSession {
-        AgentSession(
+        let title = str(dict["title"])
+        let agent = str(dict["agent"])
+        let bundleId = str(dict["bundle_id"])
+        return AgentSession(
             id: id,
-            title: str(dict["title"]).isEmpty ? defaultTitle(dict) : str(dict["title"]),
-            agent: str(dict["agent"]).isEmpty ? "Claude" : str(dict["agent"]),
-            terminal: terminalName(str(dict["term_program"]), bundleId: str(dict["bundle_id"])),
-            bundleId: str(dict["bundle_id"]),
+            title: title.isEmpty ? defaultTitle(dict) : title,
+            agent: agent.isEmpty ? "Claude" : agent,
+            terminal: terminalName(str(dict["term_program"]), bundleId: bundleId),
+            bundleId: bundleId,
             tty: str(dict["tty"]),
             itermUUID: itermUUID(str(dict["iterm_session_id"])),
             cwd: str(dict["cwd"])
@@ -409,26 +451,44 @@ final class SessionStore: ObservableObject {
     }
 
     private func updateEnvironment(_ s: inout AgentSession, dict: [String: Any]) {
-        if !str(dict["title"]).isEmpty { s.title = str(dict["title"]) }
-        if !str(dict["agent"]).isEmpty { s.agent = str(dict["agent"]) }
-        if !str(dict["tty"]).isEmpty { s.tty = str(dict["tty"]) }
-        if !str(dict["bundle_id"]).isEmpty { s.bundleId = str(dict["bundle_id"]) }
-        if !str(dict["cwd"]).isEmpty { s.cwd = str(dict["cwd"]) }
-        if !str(dict["iterm_session_id"]).isEmpty { s.itermUUID = itermUUID(str(dict["iterm_session_id"])) }
-        let term = terminalName(str(dict["term_program"]), bundleId: str(dict["bundle_id"]))
+        let title = str(dict["title"])
+        let agent = str(dict["agent"])
+        let tty = str(dict["tty"])
+        let bundleId = str(dict["bundle_id"])
+        let cwd = str(dict["cwd"])
+        let rawITermId = str(dict["iterm_session_id"])
+        if !title.isEmpty { s.title = title }
+        if !agent.isEmpty { s.agent = agent }
+        if !tty.isEmpty { s.tty = tty }
+        if !bundleId.isEmpty { s.bundleId = bundleId }
+        // cwdは最初に見えたもの（＝開いているプロジェクトフォルダ）に固定する。
+        // ツール実行中の cd でhookが報告するcwdが変わっても、グループ名・タイトルを引きずらせない
+        if s.cwd.isEmpty, !cwd.isEmpty { s.cwd = cwd }
+        if !rawITermId.isEmpty { s.itermUUID = itermUUID(rawITermId) }
+        let term = terminalName(str(dict["term_program"]), bundleId: bundleId)
         if !term.isEmpty { s.terminal = term }
     }
 
-    private func upsert(_ s: AgentSession) {
-        if let i = sessions.firstIndex(where: { $0.id == s.id }) {
-            sessions[i] = s
+    /// 1イベントにつき @Published の更新を1回にまとめ、SwiftUIの再描画を抑える。
+    private func upsertAndMaintain(_ s: AgentSession, now: Date) {
+        var updated = sessions
+        if let i = updated.firstIndex(where: { $0.id == s.id }) {
+            updated[i] = s
         } else {
-            sessions.append(s)
+            updated.append(s)
         }
+        purge(&updated, now: now)
+        sortSessions(&updated)
+        sessions = updated
     }
 
-    private func purge() {
-        let cutoff = Date().addingTimeInterval(-6 * 3600)
+    private func removeSession(id: String) {
+        sessions = sessions.filter { $0.id != id }
+        decisions = decisions.filter { $0.value.sessionId != id }
+    }
+
+    private func purge(_ sessions: inout [AgentSession], now: Date) {
+        let cutoff = now.addingTimeInterval(-6 * 3600)
         sessions.removeAll { $0.updatedAt < cutoff }
         while sessions.count > 12 {
             if let i = sessions.firstIndex(where: { $0.state == .done || $0.state == .idle }) {
@@ -439,7 +499,7 @@ final class SessionStore: ObservableObject {
         }
     }
 
-    private func sortSessions() {
+    private func sortSessions(_ sessions: inout [AgentSession]) {
         let rank: (AgentSession) -> Int = { s in
             switch s.state {
             case .waitingApproval, .waitingInput, .error: return 0
@@ -449,7 +509,9 @@ final class SessionStore: ObservableObject {
             }
         }
         sessions.sort {
-            if rank($0) != rank($1) { return rank($0) < rank($1) }
+            let lhsRank = rank($0)
+            let rhsRank = rank($1)
+            if lhsRank != rhsRank { return lhsRank < rhsRank }
             return $0.updatedAt > $1.updatedAt
         }
     }

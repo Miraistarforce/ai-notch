@@ -23,12 +23,42 @@ import urllib.request
 # ノッチの決定を待つ最大秒数（hooks側のtimeout=300より短くする）
 WAIT_SECONDS = 280
 
+# Gemini CLI のhookイベント名 → Claude Code相当への変換
+GEMINI_EVENT_MAP = {
+    "BeforeAgent": "UserPromptSubmit",
+    "AfterAgent": "Stop",
+    "BeforeTool": "PreToolUse",
+    "AfterTool": "PostToolUse",
+}
+
+
+def normalize(d, agent):
+    """エージェント名の付与と、Claude Code形式へのイベント/フィールド変換"""
+    if agent and not d.get("agent"):
+        d["agent"] = agent
+
+    ev = d.get("hook_event_name") or d.get("event_name") or ""
+    if agent == "Gemini" and ev in GEMINI_EVENT_MAP:
+        ev = GEMINI_EVENT_MAP[ev]
+        d["hook_event_name"] = ev
+
+    # ツール情報のキー名ゆれを吸収（tool_call / toolCall 形式 → tool_name / tool_input）
+    if not d.get("tool_name"):
+        tc = d.get("tool_call") or d.get("toolCall") or {}
+        if isinstance(tc, dict) and tc.get("name"):
+            d["tool_name"] = tc.get("name", "")
+            args = tc.get("args") or tc.get("arguments") or {}
+            if isinstance(args, dict):
+                d.setdefault("tool_input", args)
+    return d
+
 
 def make_rule(tool, tool_input):
     """「今後は確認しない」用の許可ルールを生成する"""
     if tool == "Bash":
         cmd = str(tool_input.get("command", "")).strip()
-        first = cmd.split()[0] if cmd.split() else ""
+        parts = cmd.split(maxsplit=1)
+        first = parts[0] if parts else ""
         if first:
             return f"Bash({first}:*)"
         return "Bash"
@@ -44,10 +74,11 @@ def wait_for_decision(port, d):
         f"http://127.0.0.1:{port}/decision"
         f"?session={urllib.parse.quote(sid)}&prompt={urllib.parse.quote(prompt_id)}"
     )
-    deadline = time.time() + WAIT_SECONDS
-    while time.time() < deadline:
+    deadline = time.monotonic() + WAIT_SECONDS
+    while time.monotonic() < deadline:
         try:
-            res = json.loads(urllib.request.urlopen(url, timeout=3).read())
+            with urllib.request.urlopen(url, timeout=2) as response:
+                res = json.loads(response.read())
         except Exception:
             return  # サーバー停止 → 通常フローへ
         dec = res.get("decision", "pending")
@@ -105,6 +136,8 @@ def main():
             "cwd": os.getcwd(),
         }
 
+    d = normalize(d, os.environ.get("NH_AGENT", ""))
+
     # ターミナル特定用の環境情報を付加
     d["tty"] = os.environ.get("NH_TTY", "")
     d["term_program"] = os.environ.get("TERM_PROGRAM", "")
@@ -119,7 +152,8 @@ def main():
             data=json.dumps(d).encode("utf-8"),
             headers={"Content-Type": "application/json"},
         )
-        urllib.request.urlopen(req, timeout=2).read()
+        with urllib.request.urlopen(req, timeout=2) as response:
+            response.read()
     except Exception:
         return  # サーバーが動いていなければ即終了
 

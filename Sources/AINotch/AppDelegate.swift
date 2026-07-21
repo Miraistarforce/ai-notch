@@ -9,9 +9,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     let port: UInt16 = UInt16(ProcessInfo.processInfo.environment["NOTCH_PORT"] ?? "") ?? 43110
     /// 受信イベントの履歴（デバッグ用、最新50件）
     private var recentEvents: [[String: Any]] = []
+    private let timestampFormatter = ISO8601DateFormatter()
+
+    private lazy var settingsController = SettingsWindowController(port: port)
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
+
+        // .app内のhookスクリプトを ~/Library/Application Support/AINotch/hooks へ同期
+        // （連携設定はこのパスを各AIの設定ファイルに書き込む）
+        HookSetup.shared.syncBundledScripts()
 
         store = SessionStore()
         windowController = NotchWindowController(store: store)
@@ -36,7 +43,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 DispatchQueue.main.async {
                     guard let self else { return }
                     var rec = dict
-                    rec["received_at"] = ISO8601DateFormatter().string(from: Date())
+                    rec["received_at"] = self.timestampFormatter.string(from: Date())
                     self.recentEvents.append(rec)
                     if self.recentEvents.count > 50 { self.recentEvents.removeFirst() }
                     self.store.handle(dict)
@@ -96,29 +103,72 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func setupStatusItem() {
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-        item.button?.title = "🏝"
-        let menu = NSMenu()
-
-        let info = NSMenuItem(title: "AI Notch — ポート \(port) で待受中", action: nil, keyEquivalent: "")
-        info.isEnabled = false
-        menu.addItem(info)
-        menu.addItem(.separator())
-
-        menu.addItem(NSMenuItem(title: "テストイベントを表示", action: #selector(sendTestEvent), keyEquivalent: "t"))
-        menu.addItem(NSMenuItem(title: "完了済みセッションを消去", action: #selector(clearDone), keyEquivalent: ""))
-        menu.addItem(.separator())
-        menu.addItem(NSMenuItem(title: "アクセシビリティ設定を開く（キー送信に必要）", action: #selector(openAccessibility), keyEquivalent: ""))
-        menu.addItem(.separator())
-        menu.addItem(NSMenuItem(title: "AI Notch を終了", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
-
-        for mi in menu.items where mi.action != nil { mi.target = self }
-        item.menu = menu
+        item.button?.image = Self.clawdMenuIcon()
+        item.button?.action = #selector(statusItemClicked(_:))
+        item.button?.target = self
+        item.button?.sendAction(on: [.leftMouseUp, .rightMouseUp])
+        item.button?.toolTip = "AI Notch — クリックで連携設定"
         statusItem = item
+    }
+
+    /// 左クリック＝連携設定を開く、右クリック＝ユーティリティメニュー
+    @objc private func statusItemClicked(_ sender: NSStatusBarButton) {
+        if NSApp.currentEvent?.type == .rightMouseUp {
+            let menu = NSMenu()
+            let info = NSMenuItem(title: "AI Notch — ポート \(port) で待受中", action: nil, keyEquivalent: "")
+            info.isEnabled = false
+            menu.addItem(info)
+            menu.addItem(.separator())
+            menu.addItem(NSMenuItem(title: "AI連携の設定を開く…", action: #selector(openSettings), keyEquivalent: ","))
+            menu.addItem(.separator())
+            menu.addItem(NSMenuItem(title: "テストイベントを表示", action: #selector(sendTestEvent), keyEquivalent: "t"))
+            menu.addItem(NSMenuItem(title: "完了済みセッションを消去", action: #selector(clearDone), keyEquivalent: ""))
+            menu.addItem(.separator())
+            menu.addItem(NSMenuItem(title: "アクセシビリティ設定を開く（キー送信に必要）", action: #selector(openAccessibility), keyEquivalent: ""))
+            menu.addItem(.separator())
+            menu.addItem(NSMenuItem(title: "AI Notch を終了", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
+            for mi in menu.items where mi.action != nil { mi.target = self }
+            menu.popUp(positioning: nil, at: NSPoint(x: 0, y: sender.bounds.height + 6), in: sender)
+        } else {
+            openSettings()
+        }
+    }
+
+    @objc private func openSettings() {
+        settingsController.open()
+    }
+
+    /// メニューバー用のClawdアイコン（ClawdSpriteと同じピクセル配置）
+    private static func clawdMenuIcon(size: CGFloat = 18) -> NSImage {
+        let image = NSImage(size: NSSize(width: size, height: size), flipped: false) { _ in
+            let unit = size / 15.0
+            let body = NSColor(calibratedRed: 0xDE / 255.0, green: 0x88 / 255.0, blue: 0x6D / 255.0, alpha: 1)
+            func px(_ x: CGFloat, _ y: CGFloat, _ w: CGFloat, _ h: CGFloat, _ color: NSColor) {
+                color.setFill()
+                NSRect(x: x * unit, y: size - (y + h) * unit, width: w * unit, height: h * unit).fill()
+            }
+            // 足4本
+            px(3, 11, 1, 4, body)
+            px(5, 11, 1, 4, body)
+            px(9, 11, 1, 4, body)
+            px(11, 11, 1, 4, body)
+            // 胴体
+            px(2, 6, 11, 7, body)
+            // 腕
+            px(0, 9, 2, 2, body)
+            px(13, 9, 2, 2, body)
+            // 目
+            px(4, 8, 1, 2, .black)
+            px(10, 8, 1, 2, .black)
+            return true
+        }
+        image.isTemplate = false
+        return image
     }
 
     @objc private func sendTestEvent() {
         // 同一フォルダで2エージェント（グループ枠のデモ）＋ 別フォルダでエラー（赤点滅のデモ）
-        let folder = "/Users/yohei/proj/mac-ai-notch"
+        let folder = "/Users/you/proj/mac-ai-notch"
         store.handle([
             "hook_event_name": "SessionStart",
             "session_id": "demo-1",
@@ -153,7 +203,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             "event": "start",
             "session_id": "demo-3",
             "agent": "Gemini",
-            "cwd": "/Users/yohei/proj/backend",
+            "cwd": "/Users/you/proj/backend",
             "term_program": "ghostty",
         ])
         store.handle([

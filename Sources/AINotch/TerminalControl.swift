@@ -4,6 +4,7 @@ import ApplicationServices
 /// ターミナルへのジャンプとキー送信（許可・拒否・選択肢回答）
 enum TerminalControl {
     private static let workQueue = DispatchQueue(label: "ainotch.terminal")
+    private static let osascriptTimeout: DispatchTimeInterval = .seconds(5)
 
     // MARK: - ジャンプ
 
@@ -57,6 +58,7 @@ enum TerminalControl {
 
     private static func activateApp(for s: AgentSession) {
         let bundleId = s.bundleId.isEmpty ? guessBundleId(s.terminal) : s.bundleId
+        guard !bundleId.isEmpty else { return }
         DispatchQueue.main.async {
             if let app = NSRunningApplication.runningApplications(withBundleIdentifier: bundleId).first {
                 app.activate()
@@ -88,21 +90,27 @@ enum TerminalControl {
         p.standardOutput = FileHandle.nullDevice
         p.standardError = FileHandle.nullDevice
         do {
+            let finished = DispatchSemaphore(value: 0)
+            p.terminationHandler = { _ in finished.signal() }
             try p.run()
-            p.waitUntilExit()
+            if finished.wait(timeout: .now() + osascriptTimeout) == .timedOut {
+                p.terminate()
+                NSLog("AINotch: osascript がタイムアウトしたため終了しました")
+            }
         } catch {
             NSLog("AINotch: osascript 失敗 \(error)")
         }
     }
 
     private static func itermJumpScript(uuid: String) -> String {
-        """
+        let uuidLiteral = appleScriptLiteral(uuid)
+        return """
         tell application "iTerm"
             activate
             repeat with w in windows
                 repeat with t in tabs of w
                     repeat with sess in sessions of t
-                        if id of sess contains "\(uuid)" then
+                        if id of sess contains \(uuidLiteral) then
                             select w
                             select t
                             select sess
@@ -116,12 +124,13 @@ enum TerminalControl {
     }
 
     private static func terminalJumpScript(tty: String) -> String {
-        """
+        let ttyLiteral = appleScriptLiteral(tty)
+        return """
         tell application "Terminal"
             activate
             repeat with w in windows
                 repeat with t in tabs of w
-                    if tty of t is "\(tty)" then
+                    if tty of t is \(ttyLiteral) then
                         set selected of t to true
                         set frontmost of w to true
                         return
@@ -137,6 +146,13 @@ enum TerminalControl {
     }
 
     private static func keystrokeScript(_ keys: String) -> String {
-        "tell application \"System Events\" to keystroke \"\(keys)\""
+        "tell application \"System Events\" to keystroke \(appleScriptLiteral(keys))"
+    }
+
+    private static func appleScriptLiteral(_ value: String) -> String {
+        let escaped = value
+            .replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "\"", with: "\\\"")
+        return "\"\(escaped)\""
     }
 }

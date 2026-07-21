@@ -17,24 +17,29 @@ AIの画面を開かなくても、ノッチにマウスを乗せるだけで **
 | エラー検知 | `notch-run` の異常終了、明示的なerrorイベント、**実行中のまま10分間無応答**（API制限などの可能性）を赤点滅で通知 |
 | サウンド | 許可待ちで Ping、完了で Glass、エラーで Basso が鳴る |
 | Clawd | 閉じたノッチの左側を小さなClawd（[clawd-on-desk](https://github.com/rullerzhou-afk/clawd-on-desk) 風のカニ）がゆっくり歩き回る。エージェントが動いていない間は立ち止まる |
+| 連携設定 | メニューバーの**Clawdアイコンをクリック**すると設定画面が開き、検出されたAI（Claude Code / Codex / Gemini CLI）をトグルでオン/オフできる。設定ファイルへの登録・解除は自動（バックアップ付き） |
 
 状態の色分け: 青緑＝実行中 / 🔵 承認・質問待ち（点滅） / 🟢 完了（点滅） / 🔴 エラー・停止（点滅） / ⚪ 待機。行クリックで確認済みになり点滅が止まる。
 
 ## セットアップ
 
+必要なもの: macOS 14 以降、Xcode Command Line Tools（Swift 5.9+）。外部依存パッケージはなし。
+
 ```bash
-cd apps/mac-ai-notch
+git clone https://github.com/Miraistarforce/ai-notch.git
+cd ai-notch
 
-# 1. ビルドして起動（メニューバーに 🏝 が出る）
+# ビルドして起動（メニューバーにClawdのアイコンが出る）
 make run
-
-# 2. Claude Code の hooks を登録（既存設定はバックアップしてからマージ）
-make install-hooks
 ```
 
-初回に **アクセシビリティ許可**（許可/拒否のキー送信用）と **オートメーション許可**（iTerm等のタブ切替用）を求められたら許可する。メニューバー 🏝 → 「アクセシビリティ設定を開く」からも開ける。
+起動したら **メニューバーのClawdアイコンをクリック** → 連携したいAIをオンにするだけ。hookスクリプトは自動で `~/Library/Application Support/AINotch/hooks/` に配置されるため、`dist/AINotch.app` を配布すれば**他の人のMacでもそのまま使える**（Swiftツールチェーン不要。アプリを起動してトグルをオンにするだけ）。
 
-動作確認はメニューバー 🏝 → 「テストイベントを表示」。
+CLI派向けに `make install-hooks`（Claude Codeのみ登録）も残してある。
+
+初回に **アクセシビリティ許可**（許可/拒否のキー送信用）と **オートメーション許可**（iTerm等のタブ切替用）を求められたら許可する。Clawdアイコン右クリック → 「アクセシビリティ設定を開く」からも開ける。
+
+動作確認はClawdアイコン右クリック → 「テストイベントを表示」。
 
 ### ログイン時に自動起動したい場合
 
@@ -44,20 +49,27 @@ make install-hooks
 
 ### Claude Code（フル対応）
 
-`make install-hooks` で `~/.claude/settings.json` に hooks が登録され、以降のセッションから自動で表示される。タイトルは最初の指示文から自動生成。ツールごとの詳細ステータス・許可待ちのdiffプレビュー・質問の選択肢まで全部出る。
+設定画面でオンにすると `~/.claude/settings.json` に hooks が登録され、以降のセッションから自動で表示される（ターミナル / Cursor / VS Code 拡張すべて）。ツールごとの詳細ステータス・許可待ちのdiffプレビュー・質問の選択肢まで全部出る。
 
-### Codex / Gemini CLI / その他のCLI（ラッパー方式）
+### Codex / ChatGPT（フル対応）
+
+設定画面でオンにすると `~/.codex/hooks.json` にClaude互換のhooksが登録される。CodexのhookはSessionStart / UserPromptSubmit / PreToolUse / PostToolUse / PermissionRequest / Stop に対応しており、Claude Code同様にツール実行状況や許可待ちが表示される。
+
+Codexには「未承認のhookは実行しない」trust機構があるため、オンにしたとき `~/.codex/config.toml` の専用ブロック（`# >>> AI Notch hooks trust >>>` 〜）に trusted_hash も自動で書き込む（設定画面のトグル操作をユーザーの同意とみなす）。`notify` 等の既存設定には一切触れない。Codexのアップデートでhookの正規化形式が変わって動かなくなった場合は、トグルをオフ→オンし直すか、Codex内で `/hooks` を開いて承認し直す。
+
+### Gemini CLI（対応・未検証）
+
+設定画面でオンにすると `~/.gemini/settings.json` に hooks（BeforeAgent / AfterAgent / BeforeTool / AfterTool 等）が登録される。イベント名はhook転送時にClaude相当へ変換している。手元にGemini CLIが無いため実機未検証。
+
+### その他のCLI（ラッパー方式）
 
 ```bash
 # hooks/ にPATHを通すか、フルパスで実行
-./hooks/notch-run codex
-./hooks/notch-run gemini
-NOTCH_TITLE="クエリ最適化" ./hooks/notch-run gemini
+./hooks/notch-run <コマンド>
+NOTCH_TITLE="クエリ最適化" ./hooks/notch-run <コマンド>
 ```
 
 開始・終了がノッチに表示される（実行中の詳細ステータスはなし）。
-
-Codexの `notify` 連携用に `hooks/codex-notify.sh` も用意してあるが、**このMacでは `~/.codex/config.toml` の notify を Claude Cowork（computer-use）が既に使用中**のため上書きしていない。使う場合はチェーンスクリプトを作って両方呼ぶこと。
 
 ### 任意のスクリプトから報告
 
@@ -71,8 +83,8 @@ Codexの `notify` 連携用に `hooks/codex-notify.sh` も用意してあるが�
 
 ```
 Claude Code hooks ──┐
-notch-run / report ─┼─ POST http://127.0.0.1:43110/event ──▶ AINotch.app（ノッチUI）
-codex-notify.sh ────┘                                          │
+Codex hooks ────────┼─ POST http://127.0.0.1:43110/event ──▶ AINotch.app（ノッチUI）
+notch-run / report ─┘                                          │
                                                                ├─ ジャンプ: AppleScript（iTerm/Terminalはタブ特定）
                                                                ├─ 承認: PermissionRequest hookがノッチの決定を
                                                                │   ポーリング（GET /decision）→ allow/deny を
@@ -101,3 +113,11 @@ curl http://127.0.0.1:43110/debug     # パネル位置・画面情報
 - Notification hookは環境によって発火しないため、許可検知は PermissionRequest hook を使用している（`make install-hooks` で登録される）
 - Ghostty / Warp はAppleScript非対応のためアプリのアクティブ化のみ（タブ特定不可）
 - Cursor / Claude Cowork などGUIアプリのエージェントは、Claude Code hooks経由（Cursor内のClaude Code拡張）以外は自動検知できない
+
+## コントリビュート
+
+Issue / Pull Request どちらも歓迎。開発時のルールと内部構成は [AGENTS.md](AGENTS.md) を参照。バグ報告には macOS のバージョン、使っているAI（Claude Code / Codex / Gemini CLI）とターミナル、`curl http://127.0.0.1:43110/events` の出力があると助かる。
+
+## ライセンス
+
+[MIT](LICENSE) © 2026 合同会社ミライスターフォース

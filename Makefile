@@ -15,6 +15,8 @@ app: build
 	mkdir -p $(DIST)/Contents/MacOS
 	cp .build/release/$(APP) $(DIST)/Contents/MacOS/$(APP)
 	cp Resources/Info.plist $(DIST)/Contents/Info.plist
+	mkdir -p $(DIST)/Contents/Resources
+	cp -R hooks $(DIST)/Contents/Resources/hooks
 	@if [ -n "$(SIGN_ID)" ]; then \
 		echo "署名: $(SIGN_ID)"; \
 		codesign --force --sign "$(SIGN_ID)" $(DIST); \

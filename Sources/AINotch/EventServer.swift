@@ -4,6 +4,12 @@ import Network
 /// 127.0.0.1 のみで待ち受ける極小HTTPサーバー。
 /// hooksスクリプトから POST /event でJSONイベントを受け取る。
 final class EventServer {
+    private static let headerSeparator = Data("\r\n\r\n".utf8)
+    private static let maxHeaderBytes = 64 * 1024
+    private static let maxBodyBytes = 8 * 1024 * 1024
+    private static let maxRequestBytes = maxHeaderBytes + maxBodyBytes
+    private static let allowedDecisions: Set<String> = ["allow", "allow_always", "deny", "defer"]
+
     private let listener: NWListener
     private let queue = DispatchQueue(label: "ainotch.server")
     var onEvent: (([String: Any]) -> Void)?
@@ -43,10 +49,12 @@ final class EventServer {
                 conn.cancel()
                 return
             }
+            if buf.count > Self.maxRequestBytes {
+                self.send(self.httpResponse(413, "{\"ok\":false,\"error\":\"request too large\"}"), to: conn)
+                return
+            }
             if let response = self.tryHandle(buf) {
-                conn.send(content: response, completion: .contentProcessed { _ in
-                    conn.cancel()
-                })
+                self.send(response, to: conn)
             } else if isComplete {
                 conn.cancel()
             } else {
@@ -57,7 +65,14 @@ final class EventServer {
 
     /// リクエストが完成していれば処理してレスポンスを返す。未完成なら nil。
     private func tryHandle(_ buf: Data) -> Data? {
-        guard let headerEnd = buf.range(of: Data("\r\n\r\n".utf8)) else { return nil }
+        guard let headerEnd = buf.range(of: Self.headerSeparator) else {
+            return buf.count > Self.maxHeaderBytes
+                ? httpResponse(413, "{\"ok\":false,\"error\":\"headers too large\"}")
+                : nil
+        }
+        guard headerEnd.lowerBound <= Self.maxHeaderBytes else {
+            return httpResponse(413, "{\"ok\":false,\"error\":\"headers too large\"}")
+        }
         let headerData = buf.subdata(in: buf.startIndex..<headerEnd.lowerBound)
         guard let header = String(data: headerData, encoding: .utf8) else {
             return httpResponse(400, "bad request")
@@ -83,15 +98,26 @@ final class EventServer {
         for line in lines.dropFirst() {
             let parts = line.split(separator: ":", maxSplits: 1)
             if parts.count == 2, parts[0].lowercased() == "content-length" {
-                contentLength = Int(parts[1].trimmingCharacters(in: .whitespaces)) ?? 0
+                guard let parsed = Int(parts[1].trimmingCharacters(in: .whitespaces)),
+                      parsed >= 0 else {
+                    return httpResponse(400, "{\"ok\":false,\"error\":\"invalid content length\"}")
+                }
+                guard parsed <= Self.maxBodyBytes else {
+                    return httpResponse(413, "{\"ok\":false,\"error\":\"body too large\"}")
+                }
+                contentLength = parsed
             }
         }
-        let body = buf.subdata(in: headerEnd.upperBound..<buf.endIndex)
-        if body.count < contentLength { return nil }
+        let availableBodyBytes = buf.distance(from: headerEnd.upperBound, to: buf.endIndex)
+        if availableBodyBytes < contentLength { return nil }
+
+        // 完成前の本文を毎回コピーすると大きいWriteイベントで二乗コストになるため、完成後に一度だけ切り出す。
+        let bodyEnd = buf.index(headerEnd.upperBound, offsetBy: contentLength)
+        let body = buf.subdata(in: headerEnd.upperBound..<bodyEnd)
 
         switch (method, path) {
         case ("POST", "/event"):
-            if let json = try? JSONSerialization.jsonObject(with: body.prefix(contentLength)) as? [String: Any] {
+            if let json = try? JSONSerialization.jsonObject(with: body) as? [String: Any] {
                 onEvent?(json)
                 return httpResponse(200, "{\"ok\":true}")
             }
@@ -111,12 +137,14 @@ final class EventServer {
             let sid = query["session"] ?? ""
             let prompt = query["prompt"] ?? ""
             let key = prompt.isEmpty ? sid : "\(sid):\(prompt)"
-            let decision = sid.isEmpty ? "pending" : (decisionProvider?(key) ?? "pending")
+            let providedDecision = sid.isEmpty ? "pending" : (decisionProvider?(key) ?? "pending")
+            let decision = Self.allowedDecisions.contains(providedDecision) ? providedDecision : "pending"
             return httpResponse(200, "{\"decision\":\"\(decision)\"}")
         case ("POST", "/decision"):
-            if let json = try? JSONSerialization.jsonObject(with: body.prefix(contentLength)) as? [String: Any],
+            if let json = try? JSONSerialization.jsonObject(with: body) as? [String: Any],
                let sid = json["session_id"] as? String,
-               let decision = json["decision"] as? String {
+               let decision = json["decision"] as? String,
+               Self.allowedDecisions.contains(decision) {
                 decisionSetter?(sid, decision)
                 return httpResponse(200, "{\"ok\":true}")
             }
@@ -131,9 +159,21 @@ final class EventServer {
     }
 
     private func httpResponse(_ status: Int, data: Data) -> Data {
-        let statusText = status == 200 ? "OK" : (status == 404 ? "Not Found" : "Bad Request")
+        let statusText: String
+        switch status {
+        case 200: statusText = "OK"
+        case 404: statusText = "Not Found"
+        case 413: statusText = "Content Too Large"
+        default: statusText = "Bad Request"
+        }
         var res = Data("HTTP/1.1 \(status) \(statusText)\r\nContent-Type: application/json; charset=utf-8\r\nContent-Length: \(data.count)\r\nConnection: close\r\n\r\n".utf8)
         res.append(data)
         return res
+    }
+
+    private func send(_ response: Data, to conn: NWConnection) {
+        conn.send(content: response, completion: .contentProcessed { _ in
+            conn.cancel()
+        })
     }
 }

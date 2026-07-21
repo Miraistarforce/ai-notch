@@ -28,6 +28,14 @@ final class NotchWindowController {
     private var lastAttentionCount = 0
     private var outsideClickMonitor: Any?
 
+    // ゴースト化：バー（ノッチ上部の帯）に2秒マウスを置くと半透明＋クリック透過になり、
+    // バーに隠れたメニューバー項目を見て・クリックできる。マウスが離れたら元に戻る。
+    private var ghostTimer: Timer?
+    private var ghostHoverStart: Date?
+    private var ghosted = false
+    private static let ghostDelay: TimeInterval = 2.0
+    private static let ghostAlpha: CGFloat = 0.18
+
     static let expandedWidth: CGFloat = 680
     static let expandedHeight: CGFloat = 520
     static let sideWidth: CGFloat = 130
@@ -117,8 +125,9 @@ final class NotchWindowController {
             notchWidth = screen.frame.width - left.width - right.width
         }
         let barHeight = screen.safeAreaInsets.top > 0 ? screen.safeAreaInsets.top : 36
-        ui.notchWidth = notchWidth
-        ui.barHeight = barHeight
+        // 同じ値の再代入でも @Published は通知するため、画面移動や開閉時の不要な再描画を避ける。
+        if ui.notchWidth != notchWidth { ui.notchWidth = notchWidth }
+        if ui.barHeight != barHeight { ui.barHeight = barHeight }
 
         let size: CGSize = expanded
             ? CGSize(width: max(Self.expandedWidth, notchWidth + 2 * Self.sideWidth), height: Self.expandedHeight)
@@ -134,6 +143,8 @@ final class NotchWindowController {
     }
 
     func refreshPin() {
+        // ゴースト中は自動オープンで邪魔しない（復帰時に改めて判定する）
+        guard !ghosted else { return }
         // 新しい通知（点滅対象の増加）が来たら、外側クリックでの一時クローズを解除する
         let count = store.attentionCount
         if count > lastAttentionCount { dismissed = false }
@@ -151,9 +162,84 @@ final class NotchWindowController {
         if inside {
             collapseWork?.cancel()
             setExpanded(true)
+            startGhostWatch()
         } else {
+            if !ghosted { stopGhostWatch() }
             collapseSoon()
         }
+    }
+
+    // MARK: - ゴースト化（半透明＋クリック透過）
+
+    /// バー領域（ノッチ上部の帯）の現在のスクリーン座標
+    private func barRect() -> NSRect? {
+        guard let screen = targetScreen() else { return nil }
+        let width = ui.notchWidth + 2 * Self.sideWidth
+        let f = screen.frame
+        return NSRect(
+            x: (f.midX - width / 2).rounded(),
+            y: f.maxY - ui.barHeight,
+            width: width,
+            height: ui.barHeight
+        )
+    }
+
+    private func startGhostWatch() {
+        guard ghostTimer == nil else { return }
+        ghostHoverStart = nil
+        ghostTimer = Timer.scheduledTimer(withTimeInterval: 0.2, repeats: true) { [weak self] _ in
+            self?.ghostTick()
+        }
+    }
+
+    private func stopGhostWatch() {
+        ghostTimer?.invalidate()
+        ghostTimer = nil
+        ghostHoverStart = nil
+    }
+
+    private func ghostTick() {
+        guard let rect = barRect() else { return }
+        let inBar = rect.contains(NSEvent.mouseLocation)
+
+        if ghosted {
+            // 透過中はパネルがイベントを受け取れないので、ここでマウスの離脱を監視する
+            if !inBar { exitGhost() }
+            return
+        }
+        if inBar {
+            if ghostHoverStart == nil { ghostHoverStart = Date() }
+            if Date().timeIntervalSince(ghostHoverStart ?? Date()) >= Self.ghostDelay {
+                enterGhost()
+            }
+        } else {
+            ghostHoverStart = nil
+            // バーからもパネルからも離れていれば監視を止める（hover側のexitで再開される）
+            if !ui.hovering { stopGhostWatch() }
+        }
+    }
+
+    private func enterGhost() {
+        ghosted = true
+        ghostHoverStart = nil
+        ui.hovering = false
+        setExpanded(false)
+        panel.ignoresMouseEvents = true
+        NSAnimationContext.runAnimationGroup { ctx in
+            ctx.duration = 0.25
+            panel.animator().alphaValue = Self.ghostAlpha
+        }
+    }
+
+    private func exitGhost() {
+        ghosted = false
+        panel.ignoresMouseEvents = false
+        NSAnimationContext.runAnimationGroup { ctx in
+            ctx.duration = 0.2
+            panel.animator().alphaValue = 1
+        }
+        stopGhostWatch()
+        refreshPin()
     }
 
     private func collapseSoon(after: TimeInterval = 0.4) {
