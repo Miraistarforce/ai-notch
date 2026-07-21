@@ -42,4 +42,6 @@ Claude Code hooks形式（`hook_event_name`: SessionStart / UserPromptSubmit / P
 
 - **許可プロンプトの検知は PermissionRequest hook を使う**。Notification hook（notification_type: permission_prompt）はVS Code/Cursor拡張環境では発火しないことを実測で確認済み（2026-07）。
 - PermissionRequest はダイアログ表示直前に発火し、stdout に何も出力せず exit 0 すれば通常の許可フローに進む（副作用なし）。
+- **ノッチの承認はキー送信ではなくhook応答で行う**：hookが `GET /decision?session=..&prompt=..` をポーリングし、決定を `hookSpecificOutput.decision`（behavior: allow は updatedInput 必須、deny は message 必須）として stdout に出力する。決定キーは `session_id:prompt_id`（並行する承認要求を区別するため。payload に `prompt_id` と `permission_suggestions` が含まれることを実測で確認）。
+- ユーザーがそのAIの画面を開いたら decision="defer" でhookを解放し、通常のダイアログを出す。
 - デバッグは `GET /events`（受信イベント履歴・最新50件）が最も確実。

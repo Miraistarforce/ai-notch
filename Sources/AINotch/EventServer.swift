@@ -10,6 +10,10 @@ final class EventServer {
     var sessionsProvider: (() -> Data)?
     var debugProvider: (() -> Data)?
     var eventsProvider: (() -> Data)?
+    /// PermissionRequest hookがポーリングする決定の取得（"pending"/"allow"/"allow_always"/"deny"/"defer"）
+    var decisionProvider: ((String) -> String)?
+    /// 外部からの決定の書き込み（テスト・自動化用）
+    var decisionSetter: ((String, String) -> Void)?
 
     init(port: UInt16) throws {
         let params = NWParameters.tcp
@@ -62,7 +66,18 @@ final class EventServer {
         let requestLine = lines.first?.components(separatedBy: " ") ?? []
         guard requestLine.count >= 2 else { return httpResponse(400, "bad request") }
         let method = requestLine[0]
-        let path = requestLine[1]
+        let fullPath = requestLine[1]
+        let pathParts = fullPath.split(separator: "?", maxSplits: 1)
+        let path = String(pathParts.first ?? "")
+        var query: [String: String] = [:]
+        if pathParts.count == 2 {
+            for pair in pathParts[1].split(separator: "&") {
+                let kv = pair.split(separator: "=", maxSplits: 1)
+                if kv.count == 2 {
+                    query[String(kv[0])] = String(kv[1]).removingPercentEncoding ?? String(kv[1])
+                }
+            }
+        }
 
         var contentLength = 0
         for line in lines.dropFirst() {
@@ -92,6 +107,20 @@ final class EventServer {
         case ("GET", "/events"):
             let data = eventsProvider?() ?? Data("[]".utf8)
             return httpResponse(200, data: data)
+        case ("GET", "/decision"):
+            let sid = query["session"] ?? ""
+            let prompt = query["prompt"] ?? ""
+            let key = prompt.isEmpty ? sid : "\(sid):\(prompt)"
+            let decision = sid.isEmpty ? "pending" : (decisionProvider?(key) ?? "pending")
+            return httpResponse(200, "{\"decision\":\"\(decision)\"}")
+        case ("POST", "/decision"):
+            if let json = try? JSONSerialization.jsonObject(with: body.prefix(contentLength)) as? [String: Any],
+               let sid = json["session_id"] as? String,
+               let decision = json["decision"] as? String {
+                decisionSetter?(sid, decision)
+                return httpResponse(200, "{\"ok\":true}")
+            }
+            return httpResponse(400, "{\"ok\":false}")
         default:
             return httpResponse(404, "not found")
         }

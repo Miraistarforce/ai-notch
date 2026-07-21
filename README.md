@@ -73,9 +73,13 @@ Claude Code hooks ──┐
 notch-run / report ─┼─ POST http://127.0.0.1:43110/event ──▶ AINotch.app（ノッチUI）
 codex-notify.sh ────┘                                          │
                                                                ├─ ジャンプ: AppleScript（iTerm/Terminalはタブ特定）
-                                                               └─ 許可/拒否/回答: System Events キー送信
-                                                                  （許可=Return、拒否=Esc、選択肢=数字+Return）
+                                                               ├─ 承認: PermissionRequest hookがノッチの決定を
+                                                               │   ポーリング（GET /decision）→ allow/deny を
+                                                               │   Claude Codeに直接返す（本物の承認。ダイアログ不要）
+                                                               └─ フォールバック: System Events キー送信
 ```
+
+承認の流れ：許可プロンプトが出るとhookが最大280秒ノッチの決定を待つ。ノッチで「1 はい / 2 はい、今後は確認しない / 3 いいえ」を選ぶとhook応答として返る。その間にそのAIの画面を自分で開くと、hookは即座に解放されて通常のダイアログが画面に表示される（ノッチと画面のどちらでも答えられる）。
 
 - サーバーは 127.0.0.1 のみで待受（ポートは環境変数 `NOTCH_PORT`、デフォルト 43110）
 - ターミナル特定は hooks が送る `TERM_PROGRAM` / `ITERM_SESSION_ID` / tty / `__CFBundleIdentifier` を使用

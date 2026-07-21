@@ -12,6 +12,7 @@ struct NotchActions {
     var hover: (Bool) -> Void
     var jump: (AgentSession) -> Void
     var allow: (AgentSession) -> Void
+    var allowAlways: (AgentSession) -> Void
     var deny: (AgentSession) -> Void
     var answer: (AgentSession, Int) -> Void
     var acknowledge: (AgentSession) -> Void
@@ -52,12 +53,28 @@ final class NotchWindowController {
                 self?.collapseSoon()
             },
             allow: { [weak self] s in
-                TerminalControl.approve(s)
-                self?.store.markDecisionSent(s.id, text: "許可を送信しました…")
+                if s.awaitingHookDecision {
+                    self?.store.decide(s.id, decision: "allow")
+                } else {
+                    TerminalControl.approve(s)
+                    self?.store.markDecisionSent(s.id, text: "許可を送信しました…")
+                }
+            },
+            allowAlways: { [weak self] s in
+                if s.awaitingHookDecision {
+                    self?.store.decide(s.id, decision: "allow_always")
+                } else {
+                    TerminalControl.answer(s, option: 2)
+                    self?.store.markDecisionSent(s.id, text: "許可（今後確認なし）を送信しました…")
+                }
             },
             deny: { [weak self] s in
-                TerminalControl.deny(s)
-                self?.store.markDecisionSent(s.id, text: "拒否を送信しました…")
+                if s.awaitingHookDecision {
+                    self?.store.decide(s.id, decision: "deny")
+                } else {
+                    TerminalControl.deny(s)
+                    self?.store.markDecisionSent(s.id, text: "拒否を送信しました…")
+                }
             },
             answer: { [weak self] s, i in
                 TerminalControl.answer(s, option: i)

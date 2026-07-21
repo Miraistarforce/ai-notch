@@ -63,8 +63,8 @@ struct CollapsedBar: View {
     @ObservedObject var ui: UIState
 
     var body: some View {
-        TimelineView(.periodic(from: .now, by: 0.5)) { ctx in
-            let phase = Int(ctx.date.timeIntervalSinceReferenceDate * 2) % 2 == 0
+        TimelineView(.periodic(from: .now, by: 0.9)) { ctx in
+            let phase = Int(ctx.date.timeIntervalSinceReferenceDate / 0.9) % 2 == 0
             HStack(spacing: 0) {
                 // 左側：セッションごとの状態ドット（点滅対応）
                 HStack(spacing: 5) {
@@ -146,8 +146,8 @@ struct ExpandedPanel: View {
             if store.sessions.isEmpty {
                 emptyState
             } else {
-                TimelineView(.periodic(from: .now, by: 0.5)) { ctx in
-                    let phase = Int(ctx.date.timeIntervalSinceReferenceDate * 2) % 2 == 0
+                TimelineView(.periodic(from: .now, by: 0.9)) { ctx in
+                    let phase = Int(ctx.date.timeIntervalSinceReferenceDate / 0.9) % 2 == 0
                     ScrollView {
                         VStack(spacing: 6) {
                             ForEach(folderGroups(store.sessions)) { group in
@@ -280,10 +280,38 @@ struct SessionRow: View {
     var inGroup = false
     var blinkPhase = true
     @State private var hovering = false
+    /// 承認待ちの詳細（内容＋選択肢）を展開しているか
+    @State private var showDetail = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 10) {
+            headerRow
+
+            if session.state == .waitingApproval, let p = session.permission {
+                if showDetail {
+                    approvalDetail(p)
+                } else {
+                    Text("クリックで内容と承認ボタンを表示 ・ ダブルクリックで画面へ")
+                        .font(.system(size: 10))
+                        .foregroundColor(.white.opacity(0.45))
+                        .padding(.leading, 18)
+                }
+            }
+
+            if let q = session.question, session.state == .waitingInput {
+                questionCard(q)
+            }
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .background(rowBackground)
+        .animation(.easeInOut(duration: 0.7), value: blinkPhase)
+        .onHover { hovering = $0 }
+    }
+
+    @ViewBuilder
+    private var headerRow: some View {
+        let row = HStack(spacing: 10) {
                 Circle()
                     .fill(Color(nsColor: session.blinkColor ?? session.stateColor))
                     .frame(width: 8, height: 8)
@@ -326,21 +354,15 @@ struct SessionRow: View {
                 }
             }
             .contentShape(Rectangle())
-            .onTapGesture { actions.jump(session) }
 
-            if let p = session.permission, session.state == .waitingApproval {
-                permissionCard(p)
-            }
-
-            if let q = session.question, session.state == .waitingInput {
-                questionCard(q)
-            }
+        if session.state == .waitingApproval {
+            // シングルクリック＝詳細の開閉、ダブルクリック＝画面へ移動
+            row
+                .simultaneousGesture(TapGesture(count: 2).onEnded { actions.jump(session) })
+                .onTapGesture { withAnimation(.easeOut(duration: 0.15)) { showDetail.toggle() } }
+        } else {
+            row.onTapGesture { actions.jump(session) }
         }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 8)
-        .background(rowBackground)
-        .animation(.easeInOut(duration: 0.4), value: blinkPhase)
-        .onHover { hovering = $0 }
     }
 
     private var rowBackground: some View {
@@ -360,8 +382,9 @@ struct SessionRow: View {
             .background(RoundedRectangle(cornerRadius: 5).fill(Color.white.opacity(0.1)))
     }
 
-    private func permissionCard(_ p: PermissionRequest) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
+    /// 承認待ちの詳細：AIが実行しようとしている内容の全文＋Claude Codeと同じ並びの選択肢
+    private func approvalDetail(_ p: PermissionRequest) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 6) {
                 Text("🔵")
                     .font(.system(size: 9))
@@ -369,43 +392,61 @@ struct SessionRow: View {
                     .font(.system(size: 11, weight: .semibold, design: .monospaced))
                     .foregroundColor(Color(nsColor: .systemBlue))
                     .lineLimit(1)
+                Spacer()
+                Text("クリックで閉じる")
+                    .font(.system(size: 9))
+                    .foregroundColor(.white.opacity(0.35))
             }
             if !p.lines.isEmpty {
-                VStack(alignment: .leading, spacing: 2) {
-                    ForEach(Array(p.lines.enumerated()), id: \.offset) { _, line in
-                        Text(line)
-                            .font(.system(size: 10, design: .monospaced))
-                            .foregroundColor(diffColor(line))
-                            .lineLimit(1)
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 2) {
+                        ForEach(Array(p.lines.enumerated()), id: \.offset) { _, line in
+                            Text(line)
+                                .font(.system(size: 10, design: .monospaced))
+                                .foregroundColor(diffColor(line))
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
                     }
                 }
+                .frame(maxHeight: 150)
                 .padding(8)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .background(RoundedRectangle(cornerRadius: 6).fill(Color.white.opacity(0.05)))
             }
-            HStack(spacing: 8) {
-                Button(action: { actions.deny(session) }) {
-                    Text("拒否")
-                        .font(.system(size: 12, weight: .medium))
-                        .foregroundColor(.white)
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 6)
-                        .background(RoundedRectangle(cornerRadius: 7).fill(Color.white.opacity(0.12)))
-                }
-                .buttonStyle(.plain)
-                Button(action: { actions.allow(session) }) {
-                    Text("許可")
-                        .font(.system(size: 12, weight: .semibold))
-                        .foregroundColor(.black)
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 6)
-                        .background(RoundedRectangle(cornerRadius: 7).fill(Color.white))
-                }
-                .buttonStyle(.plain)
+            VStack(spacing: 4) {
+                approvalOption(1, "はい", accent: true) { actions.allow(session) }
+                approvalOption(2, "はい、今後は確認しない") { actions.allowAlways(session) }
+                approvalOption(3, "いいえ — 拒否してAIに伝える") { actions.deny(session) }
             }
         }
         .padding(10)
         .background(RoundedRectangle(cornerRadius: 8).fill(Color.blue.opacity(0.08)))
+        .contentShape(Rectangle())
+        .onTapGesture {
+            withAnimation(.easeOut(duration: 0.15)) { showDetail = false }
+        }
+    }
+
+    private func approvalOption(_ n: Int, _ label: String, accent: Bool = false, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(spacing: 8) {
+                Text("\(n)")
+                    .font(.system(size: 10, weight: .bold, design: .monospaced))
+                    .foregroundColor(accent ? .black.opacity(0.6) : .white.opacity(0.6))
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(RoundedRectangle(cornerRadius: 4).fill(accent ? Color.black.opacity(0.1) : Color.white.opacity(0.12)))
+                Text(label)
+                    .font(.system(size: 12, weight: accent ? .semibold : .regular))
+                    .foregroundColor(accent ? .black : .white)
+                    .lineLimit(1)
+                Spacer()
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 6)
+            .background(RoundedRectangle(cornerRadius: 7).fill(accent ? Color.white.opacity(0.92) : Color.white.opacity(0.06)))
+        }
+        .buttonStyle(.plain)
     }
 
     private func questionCard(_ q: PendingQuestion) -> some View {

@@ -39,6 +39,10 @@ struct AgentSession: Identifiable {
     var updatedAt = Date()
     /// ユーザーが行をクリックして確認済み（点滅・自動オープンを止める）
     var acknowledged = false
+    /// PermissionRequest hookがノッチの決定を待っている（trueなら承認ボタンはhook応答で機能する）
+    var awaitingHookDecision = false
+    /// 現在の承認プロンプトの一意ID（同一セッション内の並行承認要求を区別する）
+    var promptId = ""
 
     /// 表示用エージェント名。Cursor / VS Code 内で動いている場合はホストを併記する
     /// （例: claude-cursor, claude-vscode）
@@ -102,6 +106,8 @@ final class SessionStore: ObservableObject {
     /// 実行中のままこの秒数イベントが来なければエラー扱いにする
     private let staleSeconds: TimeInterval = 600
     private var tickTimer: Timer?
+    /// PermissionRequest hookへ渡す決定（セッションID → allow/allow_always/deny/defer）
+    private var decisions: [String: String] = [:]
 
     init() {
         // 定期チェック：無応答検知＋点滅の期限切れでパネルを閉じる判定を更新
@@ -131,8 +137,61 @@ final class SessionStore: ObservableObject {
             if s.hostBundleId == bid, !s.acknowledged, s.state == .done || s.state == .error {
                 sessions[i].acknowledged = true
             }
+            // 承認待ちのセッションの画面を開いたら、hookを解放して
+            // 通常の承認ダイアログをその画面に出す（ユーザーが直接答えられるように）
+            if s.hostBundleId == bid, s.state == .waitingApproval, s.awaitingHookDecision {
+                decisions[decisionKey(s.id, s.promptId)] = "defer"
+                sessions[i].awaitingHookDecision = false
+                sessions[i].statusText = "画面のダイアログで回答してください"
+            }
         }
         onChange?()
+    }
+
+    // MARK: - 承認の決定（PermissionRequest hook連携）
+
+    private func decisionKey(_ sid: String, _ promptId: String) -> String {
+        promptId.isEmpty ? sid : "\(sid):\(promptId)"
+    }
+
+    /// ノッチのボタンから決定を登録する。hookがポーリングで受け取り、Claude Codeに直接返す。
+    func decide(_ id: String, decision: String) {
+        guard let i = sessions.firstIndex(where: { $0.id == id }) else {
+            decisions[id] = decision
+            onChange?()
+            return
+        }
+        decisions[decisionKey(id, sessions[i].promptId)] = decision
+        switch decision {
+        case "allow":
+            sessions[i].state = .working
+            sessions[i].statusText = "許可しました — 実行中…"
+        case "allow_always":
+            sessions[i].state = .working
+            sessions[i].statusText = "許可しました（今後は確認なし）"
+        case "deny":
+            sessions[i].state = .working
+            sessions[i].statusText = "拒否しました"
+        default:
+            break
+        }
+        if decision != "defer" {
+            sessions[i].permission = nil
+            sessions[i].question = nil
+        }
+        onChange?()
+    }
+
+    /// hookのポーリングに応答する。決定があれば取り出して返す（1回限り）。
+    /// key は「セッションID」または「セッションID:プロンプトID」。
+    func takeDecision(_ key: String) -> String? {
+        guard let d = decisions[key] else { return nil }
+        decisions.removeValue(forKey: key)
+        let sid = String(key.split(separator: ":", maxSplits: 1).first ?? "")
+        if let i = sessions.firstIndex(where: { $0.id == sid || $0.id == key }) {
+            sessions[i].awaitingHookDecision = false
+        }
+        return d
     }
     var workingCount: Int { sessions.filter { $0.state == .working }.count }
     var pendingCount: Int { sessions.filter { $0.state == .waitingApproval || $0.state == .waitingInput }.count }
@@ -179,7 +238,8 @@ final class SessionStore: ObservableObject {
                 s.statusText = toolStatus(tool, input)
             }
         case "PermissionRequest":
-            // 許可ダイアログ表示の直前に発火する専用イベント（最も確実な検知手段）
+            // 許可ダイアログ表示の直前に発火する専用イベント。
+            // hookはノッチの決定を待つので、ここでの承認ボタンは本物の許可/拒否として機能する。
             let tool = str(dict["tool_name"])
             let input = dict["tool_input"] as? [String: Any] ?? [:]
             let detail = toolDetail(tool, input)
@@ -188,7 +248,16 @@ final class SessionStore: ObservableObject {
             s.lastTool = detail
             s.statusText = "許可待ち: \(detail.summary)"
             s.acknowledged = false
-            playSound("Ping")
+            s.awaitingHookDecision = true
+            s.promptId = str(dict["prompt_id"])
+            decisions.removeValue(forKey: decisionKey(sid, s.promptId))
+            if s.isOnScreen {
+                // 画面を見ているならノッチは介入せず、すぐ通常のダイアログを出す
+                decisions[decisionKey(sid, s.promptId)] = "defer"
+                s.awaitingHookDecision = false
+            } else {
+                playSound("Ping")
+            }
         case "PostToolUse":
             s.state = .working
             s.statusText = "考え中…"
@@ -404,23 +473,28 @@ final class SessionStore: ObservableObject {
         case "Bash":
             let c = str(input["command"])
             summary = "Bash: \(truncate(c.replacingOccurrences(of: "\n", with: " "), 44))"
-            lines = c.split(separator: "\n").prefix(4).map { "$ \($0)" }
+            lines = c.split(separator: "\n").prefix(20).map { "$ \($0)" }
         case "Edit", "MultiEdit":
             let f = shortPath(str(input["file_path"]))
             summary = "\(tool) \(f)"
-            let old = str(input["old_string"]).split(separator: "\n").prefix(3).map { "- \($0)" }
-            let new = str(input["new_string"]).split(separator: "\n").prefix(3).map { "+ \($0)" }
+            let old = str(input["old_string"]).split(separator: "\n").prefix(10).map { "- \($0)" }
+            let new = str(input["new_string"]).split(separator: "\n").prefix(10).map { "+ \($0)" }
             lines = Array(old) + Array(new)
         case "Write":
             let f = shortPath(str(input["file_path"]))
             summary = "Write \(f)"
-            lines = str(input["content"]).split(separator: "\n").prefix(4).map { "+ \($0)" }
+            lines = str(input["content"]).split(separator: "\n").prefix(14).map { "+ \($0)" }
         case "WebFetch":
             summary = "WebFetch \(truncate(str(input["url"]), 44))"
+            lines = [str(input["url"])]
         default:
             summary = tool
+            if let data = try? JSONSerialization.data(withJSONObject: input, options: [.prettyPrinted]),
+               let text = String(data: data, encoding: .utf8) {
+                lines = text.split(separator: "\n").prefix(12).map(String.init)
+            }
         }
-        return PermissionRequest(toolName: tool, summary: summary, lines: lines.map { truncate($0, 64) })
+        return PermissionRequest(toolName: tool, summary: summary, lines: lines.map { truncate($0, 160) })
     }
 
     private func parseQuestion(_ input: [String: Any]) -> PendingQuestion {

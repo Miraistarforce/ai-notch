@@ -46,11 +46,23 @@ for ev in events:
     )
     if present:
         continue
-    entry = {"hooks": [{"type": "command", "command": cmd}]}
+    hook_def = {"type": "command", "command": cmd}
+    if ev == "PermissionRequest":
+        # ノッチでの決定を待つため長めのタイムアウトを明示する
+        hook_def["timeout"] = 300
+    entry = {"hooks": [hook_def]}
     if ev in ("PreToolUse", "PostToolUse"):
         entry["matcher"] = "*"
     matchers.append(entry)
     added.append(ev)
+
+# 既存インストール分への移行: PermissionRequest に timeout を付与
+for m in hooks.get("PermissionRequest", []):
+    for h in m.get("hooks", []):
+        if "notch-hook.sh" in h.get("command", "") and h.get("timeout") != 300:
+            h["timeout"] = 300
+            if "PermissionRequest(timeout更新)" not in added:
+                added.append("PermissionRequest(timeout更新)")
 
 os.makedirs(os.path.dirname(settings_path), exist_ok=True)
 with open(settings_path, "w") as f:

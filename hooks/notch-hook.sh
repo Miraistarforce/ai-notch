@@ -13,7 +13,8 @@ else
   NH_TTY=""
 fi
 
+# stdoutはClaude Codeが読む（PermissionRequestの許可/拒否応答に使う）ため塞がない
 NH_PAYLOAD="$PAYLOAD" NH_TTY="$NH_TTY" NH_PORT="${NOTCH_PORT:-43110}" \
-  python3 "$DIR/notch_post.py" >/dev/null 2>&1
+  python3 "$DIR/notch_post.py" 2>/dev/null
 
 exit 0

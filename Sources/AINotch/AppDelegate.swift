@@ -58,6 +58,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 }
                 return data
             }
+            server.decisionProvider = { [weak self] sid in
+                var decision = "pending"
+                if let self {
+                    DispatchQueue.main.sync {
+                        decision = self.store.takeDecision(sid) ?? "pending"
+                    }
+                }
+                return decision
+            }
+            server.decisionSetter = { [weak self] sid, decision in
+                DispatchQueue.main.async { self?.store.decide(sid, decision: decision) }
+            }
             server.debugProvider = { [weak self] in
                 var data = Data("{}".utf8)
                 if let self {
