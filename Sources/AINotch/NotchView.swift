@@ -98,8 +98,12 @@ struct CollapsedBar: View {
                 }
                 .frame(width: NotchWindowController.sideWidth)
             }
-            .frame(height: ui.barHeight)
-            .frame(maxWidth: .infinity)
+            // ウィンドウが展開サイズのままでも、閉じたバーは常に固定幅で中央に描画する
+            // （開閉の瞬間にバーが横に伸びて見えるのを防ぐ）
+            .frame(
+                width: ui.notchWidth + 2 * NotchWindowController.sideWidth,
+                height: ui.barHeight
+            )
             .background(
                 UnevenRoundedRectangle(
                     topLeadingRadius: 0,

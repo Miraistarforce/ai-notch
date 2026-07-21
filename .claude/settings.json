@@ -37,7 +37,13 @@
       "Bash(tccutil reset *)",
       "Bash(codesign -dv dist/AINotch.app)",
       "Bash(git -c user.name=Miraistarforce -c user.email=miraistarforce@gmail.com commit -q -m '点滅の枠線を削除し背景のみに、Apple Development署名で権限をリビルド後も維持 *)",
-      "Bash(git -c user.name=Miraistarforce -c user.email=miraistarforce@gmail.com commit -q -m '閉じたノッチにClawdの歩行アニメーションを追加 *)"
+      "Bash(git -c user.name=Miraistarforce -c user.email=miraistarforce@gmail.com commit -q -m '閉じたノッチにClawdの歩行アニメーションを追加 *)",
+      "Bash(rm -f frame*.png)",
+      "Bash(ffprobe -v quiet -show_entries format=duration -of csv=p=0 \"/Users/yohei/Desktop/画面収録 2026-07-21 10.32.18.mov\")",
+      "Bash(ffmpeg -v quiet -i \"/Users/yohei/Desktop/画面収録 2026-07-21 10.32.18.mov\" -vf \"crop=iw:ih*0.12:0:0,fps=10,scale=1200:-1\" frame%03d.png)",
+      "Bash(python3 -c \"import PIL; print\\('PIL OK'\\)\")",
+      "Bash(ffmpeg -v quiet -y -i \"concat:$\\(echo frame005.png\\)\" -f null -)",
+      "Bash(ffmpeg -v quiet -y -i frame005.png -i frame006.png -i frame007.png -i frame015.png -i frame026.png -i frame027.png -filter_complex [0][1][2][3][4][5]vstack=6,scale=1100:-1 montage1.png)"
     ]
   }
 }
