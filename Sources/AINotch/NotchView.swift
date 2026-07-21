@@ -311,6 +311,19 @@ struct SessionRow: View {
                 Text(session.elapsedText)
                     .font(.system(size: 10))
                     .foregroundColor(.white.opacity(0.4))
+
+                // 完了・エラーは「了解」で点滅を消せる（AIの画面を開かなくてよい）
+                if (session.state == .done || session.state == .error), !session.acknowledged {
+                    Button(action: { actions.acknowledge(session) }) {
+                        Text("了解")
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundColor(.black)
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 4)
+                            .background(Capsule().fill(Color.white.opacity(0.9)))
+                    }
+                    .buttonStyle(.plain)
+                }
             }
             .contentShape(Rectangle())
             .onTapGesture { actions.jump(session) }

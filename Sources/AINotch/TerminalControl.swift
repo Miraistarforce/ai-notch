@@ -66,7 +66,7 @@ enum TerminalControl {
         }
     }
 
-    private static func guessBundleId(_ terminal: String) -> String {
+    static func guessBundleId(_ terminal: String) -> String {
         switch terminal {
         case "iTerm": return "com.googlecode.iterm2"
         case "Terminal": return "com.apple.Terminal"
@@ -76,6 +76,7 @@ enum TerminalControl {
         case "kitty": return "net.kovidgoyal.kitty"
         case "Cursor": return "com.todesktop.230313mzl4w4u92"
         case "VS Code": return "com.microsoft.VSCode"
+        case "": return ""
         default: return "com.apple.Terminal"
         }
     }

@@ -14,6 +14,7 @@ struct NotchActions {
     var allow: (AgentSession) -> Void
     var deny: (AgentSession) -> Void
     var answer: (AgentSession, Int) -> Void
+    var acknowledge: (AgentSession) -> Void
 }
 
 final class NotchWindowController {
@@ -21,8 +22,6 @@ final class NotchWindowController {
     let store: SessionStore
     let ui = UIState()
     private var collapseWork: DispatchWorkItem?
-    /// 完了通知などでパネルを一時的に開いている期限
-    private var flashUntil = Date.distantPast
 
     static let expandedWidth: CGFloat = 680
     static let expandedHeight: CGFloat = 520
@@ -63,6 +62,9 @@ final class NotchWindowController {
             answer: { [weak self] s, i in
                 TerminalControl.answer(s, option: i)
                 self?.store.markDecisionSent(s.id, text: "回答 \(i) を送信しました…")
+            },
+            acknowledge: { [weak self] s in
+                self?.store.acknowledge(s.id)
             }
         )
         let root = NotchRootView(store: store, ui: ui, actions: actions)
@@ -105,13 +107,6 @@ final class NotchWindowController {
         }
     }
 
-    /// 完了時などにパネルを一時的に自動オープンする
-    func flashOpen(seconds: TimeInterval = 8) {
-        flashUntil = Date().addingTimeInterval(seconds)
-        setExpanded(true)
-        collapseSoon(after: seconds + 0.2)
-    }
-
     private func hoverChanged(_ inside: Bool) {
         ui.hovering = inside
         if inside {
@@ -126,7 +121,7 @@ final class NotchWindowController {
         collapseWork?.cancel()
         let work = DispatchWorkItem { [weak self] in
             guard let self else { return }
-            if !self.ui.hovering && !self.store.needsAttention && Date() >= self.flashUntil {
+            if !self.ui.hovering && !self.store.needsAttention {
                 self.setExpanded(false)
             }
         }

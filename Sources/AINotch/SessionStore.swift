@@ -61,16 +61,28 @@ struct AgentSession: Identifiable {
         }
     }
 
-    /// 点滅色。承認/質問待ち=青、完了=緑（直後30秒）、エラー=赤。nilなら点滅しない
+    /// 点滅色。承認/質問待ち=青、完了=緑（直後60秒）、エラー=赤。nilなら点滅しない
     var blinkColor: NSColor? {
         guard !acknowledged else { return nil }
         switch state {
         case .waitingApproval: return .systemBlue
         case .waitingInput: return question != nil ? .systemBlue : nil
-        case .done: return Date().timeIntervalSince(updatedAt) < 30 ? .systemGreen : nil
+        case .done: return Date().timeIntervalSince(updatedAt) < 60 ? .systemGreen : nil
         case .error: return .systemRed
         default: return nil
         }
+    }
+
+    /// このセッションが動いているホストアプリのバンドルID（不明なら空）
+    var hostBundleId: String {
+        bundleId.isEmpty ? TerminalControl.guessBundleId(terminal) : bundleId
+    }
+
+    /// このセッションの画面（ターミナル/エディタ）をユーザーが今見ているか
+    var isOnScreen: Bool {
+        let host = hostBundleId
+        guard !host.isEmpty else { return false }
+        return NSWorkspace.shared.frontmostApplication?.bundleIdentifier == host
     }
 
     var elapsedText: String {
@@ -86,29 +98,41 @@ final class SessionStore: ObservableObject {
     @Published var sessions: [AgentSession] = []
     /// 状態変化のたびに呼ばれる（パネルの開閉判定用）
     var onChange: (() -> Void)?
-    /// 完了時に呼ばれる（パネルを一時的に自動オープン）
-    var onFlash: (() -> Void)?
 
     /// 実行中のままこの秒数イベントが来なければエラー扱いにする
     private let staleSeconds: TimeInterval = 600
-    private var staleTimer: Timer?
+    private var tickTimer: Timer?
 
     init() {
-        staleTimer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in
+        // 定期チェック：無応答検知＋点滅の期限切れでパネルを閉じる判定を更新
+        tickTimer = Timer.scheduledTimer(withTimeInterval: 15, repeats: true) { [weak self] _ in
             self?.checkStale()
+            self?.onChange?()
         }
     }
 
-    /// パネルを開いたままにすべき状態（承認待ち・選択肢付き質問・未確認エラー）
+    /// パネルを開いたままにすべき状態。
+    /// 点滅中（承認待ち・質問・完了直後・エラー）のセッションのうち、
+    /// ユーザーが今その画面を見ていないものが1つでもあれば true。
+    /// → 全ての点滅が解除された時点でパネルは自動で閉じる。
     var needsAttention: Bool {
-        sessions.contains { s in
-            switch s.state {
-            case .waitingApproval: return true
-            case .waitingInput: return s.question != nil
-            case .error: return !s.acknowledged
-            default: return false
+        sessions.contains { $0.blinkColor != nil && !$0.isOnScreen }
+    }
+
+    /// アプリ切り替え時に呼ぶ。点滅中の完了/エラーのセッションの画面を開いたら
+    /// 「確認済み」にして点滅を解除する（承認待ちは画面を離れたら再点滅させたいので解除しない）
+    func frontmostChanged(_ bundleId: String?) {
+        guard let bid = bundleId, !bid.isEmpty else {
+            onChange?()
+            return
+        }
+        for i in sessions.indices {
+            let s = sessions[i]
+            if s.hostBundleId == bid, !s.acknowledged, s.state == .done || s.state == .error {
+                sessions[i].acknowledged = true
             }
         }
+        onChange?()
     }
     var workingCount: Int { sessions.filter { $0.state == .working }.count }
     var pendingCount: Int { sessions.filter { $0.state == .waitingApproval || $0.state == .waitingInput }.count }
@@ -121,7 +145,6 @@ final class SessionStore: ObservableObject {
         let ev = str(dict["hook_event_name"]).isEmpty ? str(dict["event"]) : str(dict["hook_event_name"])
         guard !ev.isEmpty else { return }
         let sid = str(dict["session_id"]).isEmpty ? "unknown" : str(dict["session_id"])
-        var flash = false
 
         var s = sessions.first(where: { $0.id == sid }) ?? newSession(id: sid, dict: dict)
         updateEnvironment(&s, dict: dict)
@@ -189,7 +212,6 @@ final class SessionStore: ObservableObject {
             s.permission = nil
             s.question = nil
             s.acknowledged = false
-            flash = true
             playSound("Glass")
         case "SessionEnd":
             sessions.removeAll { $0.id == sid }
@@ -208,7 +230,6 @@ final class SessionStore: ObservableObject {
             let st = str(dict["status"])
             s.statusText = st.isEmpty ? "完了 — クリックで移動" : st
             s.acknowledged = false
-            flash = true
             playSound("Glass")
         case "error":
             s.state = .error
@@ -230,7 +251,6 @@ final class SessionStore: ObservableObject {
         purge()
         sortSessions()
         onChange?()
-        if flash { onFlash?() }
     }
 
     func clearFinished() {

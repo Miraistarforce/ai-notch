@@ -18,10 +18,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         store.onChange = { [weak self] in
             self?.windowController.refreshPin()
         }
-        store.onFlash = { [weak self] in
-            self?.windowController.flashOpen()
-        }
         windowController.show()
+
+        // アプリ切り替えを監視：点滅中のセッションの画面を開いたら点滅を解除し、
+        // 逆に画面から離れたら（未対応の承認待ちがあれば）パネルを開き直す
+        NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didActivateApplicationNotification,
+            object: nil, queue: .main
+        ) { [weak self] note in
+            let app = note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication
+            self?.store.frontmostChanged(app?.bundleIdentifier)
+        }
 
         do {
             let server = try EventServer(port: port)
