@@ -19,6 +19,43 @@ struct NotchRootView: View {
     }
 }
 
+// MARK: - フォルダグループ
+
+struct FolderGroup: Identifiable {
+    let id: String
+    let name: String
+    let color: Color
+    let sessions: [AgentSession]
+}
+
+/// 同じフォルダ（cwd）で動くセッションをまとめる。表示順は保持。
+func folderGroups(_ sessions: [AgentSession]) -> [FolderGroup] {
+    var order: [String] = []
+    var map: [String: [AgentSession]] = [:]
+    for s in sessions {
+        let key = s.cwd.isEmpty ? s.title : s.cwd
+        if map[key] == nil { order.append(key) }
+        map[key, default: []].append(s)
+    }
+    return order.map { key in
+        let list = map[key] ?? []
+        return FolderGroup(
+            id: key,
+            name: list.first?.title ?? key,
+            color: groupColor(key),
+            sessions: list
+        )
+    }
+}
+
+/// フォルダごとの識別色（状態色の緑/青/赤とかぶらない系統）
+private let groupPalette: [Color] = [.purple, .yellow, .pink, .mint, .indigo, .orange, .brown]
+
+func groupColor(_ key: String) -> Color {
+    let sum = key.unicodeScalars.reduce(0) { $0 + Int($1.value) }
+    return groupPalette[sum % groupPalette.count]
+}
+
 // MARK: - 折りたたみ状態（ノッチ左右にインジケーター）
 
 struct CollapsedBar: View {
@@ -26,53 +63,65 @@ struct CollapsedBar: View {
     @ObservedObject var ui: UIState
 
     var body: some View {
-        HStack(spacing: 0) {
-            // 左側：セッションごとの状態ドット
-            HStack(spacing: 5) {
-                if store.sessions.isEmpty {
-                    Circle().fill(Color.gray.opacity(0.6)).frame(width: 6, height: 6)
-                } else {
-                    ForEach(store.sessions.prefix(5)) { s in
-                        Circle()
-                            .fill(Color(nsColor: s.stateColor))
-                            .frame(width: 6, height: 6)
+        TimelineView(.periodic(from: .now, by: 0.5)) { ctx in
+            let phase = Int(ctx.date.timeIntervalSinceReferenceDate * 2) % 2 == 0
+            HStack(spacing: 0) {
+                // 左側：セッションごとの状態ドット（点滅対応）
+                HStack(spacing: 5) {
+                    if store.sessions.isEmpty {
+                        Circle().fill(Color.gray.opacity(0.6)).frame(width: 6, height: 6)
+                    } else {
+                        ForEach(store.sessions.prefix(5)) { s in
+                            Circle()
+                                .fill(Color(nsColor: s.blinkColor ?? s.stateColor))
+                                .frame(width: 6, height: 6)
+                                .opacity(s.blinkColor != nil && !phase ? 0.25 : 1.0)
+                        }
                     }
                 }
-            }
-            .frame(width: NotchWindowController.sideWidth)
+                .frame(width: NotchWindowController.sideWidth)
 
-            Spacer(minLength: ui.notchWidth)
+                Spacer(minLength: ui.notchWidth)
 
-            // 右側：サマリーテキスト
-            Group {
-                if store.pendingCount > 0 {
-                    Text("承認待ち \(store.pendingCount)")
-                        .foregroundColor(.orange)
-                } else if store.workingCount > 0 {
-                    Text("実行中 \(store.workingCount)")
-                        .foregroundColor(.green)
-                } else if store.doneCount > 0 {
-                    Text("完了 \(store.doneCount)")
-                        .foregroundColor(Color(nsColor: .systemBlue))
-                } else {
-                    Text("待機")
-                        .foregroundColor(.gray)
-                }
+                // 右側：サマリーテキスト
+                summary(phase: phase)
+                    .font(.system(size: 11, weight: .medium))
+                    .frame(width: NotchWindowController.sideWidth)
             }
-            .font(.system(size: 11, weight: .medium))
-            .frame(width: NotchWindowController.sideWidth)
-        }
-        .frame(height: ui.barHeight)
-        .frame(maxWidth: .infinity)
-        .background(
-            UnevenRoundedRectangle(
-                topLeadingRadius: 0,
-                bottomLeadingRadius: 12,
-                bottomTrailingRadius: 12,
-                topTrailingRadius: 0
+            .frame(height: ui.barHeight)
+            .frame(maxWidth: .infinity)
+            .background(
+                UnevenRoundedRectangle(
+                    topLeadingRadius: 0,
+                    bottomLeadingRadius: 12,
+                    bottomTrailingRadius: 12,
+                    topTrailingRadius: 0
+                )
+                .fill(Color.black)
             )
-            .fill(Color.black)
-        )
+        }
+    }
+
+    @ViewBuilder
+    private func summary(phase: Bool) -> some View {
+        if store.errorCount > 0 {
+            Text("エラー \(store.errorCount)")
+                .foregroundColor(.red)
+                .opacity(phase ? 1.0 : 0.4)
+        } else if store.pendingCount > 0 {
+            Text("承認待ち \(store.pendingCount)")
+                .foregroundColor(Color(nsColor: .systemBlue))
+                .opacity(phase ? 1.0 : 0.4)
+        } else if store.workingCount > 0 {
+            Text("実行中 \(store.workingCount)")
+                .foregroundColor(Color(nsColor: .systemTeal))
+        } else if store.doneCount > 0 {
+            Text("完了 \(store.doneCount)")
+                .foregroundColor(.green)
+        } else {
+            Text("待機")
+                .foregroundColor(.gray)
+        }
     }
 }
 
@@ -97,11 +146,16 @@ struct ExpandedPanel: View {
             if store.sessions.isEmpty {
                 emptyState
             } else {
-                TimelineView(.periodic(from: .now, by: 20)) { _ in
+                TimelineView(.periodic(from: .now, by: 0.5)) { ctx in
+                    let phase = Int(ctx.date.timeIntervalSinceReferenceDate * 2) % 2 == 0
                     ScrollView {
-                        VStack(spacing: 4) {
-                            ForEach(store.sessions) { s in
-                                SessionRow(session: s, actions: actions)
+                        VStack(spacing: 6) {
+                            ForEach(folderGroups(store.sessions)) { group in
+                                if group.sessions.count > 1 {
+                                    GroupCard(group: group, actions: actions, blinkPhase: phase)
+                                } else if let s = group.sessions.first {
+                                    SessionRow(session: s, actions: actions, inGroup: false, blinkPhase: phase)
+                                }
                             }
                         }
                         .padding(.horizontal, 10)
@@ -136,9 +190,12 @@ struct ExpandedPanel: View {
                 .foregroundColor(.white)
             Spacer()
             HStack(spacing: 12) {
-                statChip(color: .green, label: "実行中", count: store.workingCount)
-                statChip(color: .orange, label: "待ち", count: store.pendingCount)
-                statChip(color: Color(nsColor: .systemBlue), label: "完了", count: store.doneCount)
+                statChip(color: Color(nsColor: .systemTeal), label: "実行中", count: store.workingCount)
+                statChip(color: Color(nsColor: .systemBlue), label: "待ち", count: store.pendingCount)
+                statChip(color: .green, label: "完了", count: store.doneCount)
+                if store.errorCount > 0 {
+                    statChip(color: .red, label: "エラー", count: store.errorCount)
+                }
             }
         }
     }
@@ -166,10 +223,52 @@ struct ExpandedPanel: View {
     }
 
     private var footer: some View {
-        Text("行をクリックでターミナルへ移動 ・ 許可/拒否はボタンから")
+        Text("行をクリックでターミナルへ移動 ・ 🔵承認待ち 🟢完了 🔴エラー")
             .font(.system(size: 10))
             .foregroundColor(.white.opacity(0.35))
             .frame(maxWidth: .infinity)
+    }
+}
+
+// MARK: - フォルダグループカード（同一フォルダの複数エージェントを囲う）
+
+struct GroupCard: View {
+    let group: FolderGroup
+    let actions: NotchActions
+    let blinkPhase: Bool
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 7) {
+                RoundedRectangle(cornerRadius: 2)
+                    .fill(group.color)
+                    .frame(width: 4, height: 14)
+                Text("📁 \(group.name)")
+                    .font(.system(size: 12, weight: .bold))
+                    .foregroundColor(.white)
+                Text("\(group.sessions.count) エージェント")
+                    .font(.system(size: 10))
+                    .foregroundColor(.white.opacity(0.45))
+                Spacer()
+            }
+            .padding(.horizontal, 6)
+            .padding(.top, 2)
+
+            VStack(spacing: 4) {
+                ForEach(group.sessions) { s in
+                    SessionRow(session: s, actions: actions, inGroup: true, blinkPhase: blinkPhase)
+                }
+            }
+        }
+        .padding(6)
+        .background(
+            RoundedRectangle(cornerRadius: 12)
+                .fill(group.color.opacity(0.06))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 12)
+                .stroke(group.color.opacity(0.4), lineWidth: 1)
+        )
     }
 }
 
@@ -178,17 +277,20 @@ struct ExpandedPanel: View {
 struct SessionRow: View {
     let session: AgentSession
     let actions: NotchActions
+    var inGroup = false
+    var blinkPhase = true
     @State private var hovering = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 10) {
                 Circle()
-                    .fill(Color(nsColor: session.stateColor))
+                    .fill(Color(nsColor: session.blinkColor ?? session.stateColor))
                     .frame(width: 8, height: 8)
+                    .opacity(session.blinkColor != nil && !blinkPhase ? 0.25 : 1.0)
 
                 VStack(alignment: .leading, spacing: 3) {
-                    Text(session.title)
+                    Text(inGroup ? session.agentLabel : session.title)
                         .font(.system(size: 13, weight: .semibold))
                         .foregroundColor(.white)
                         .lineLimit(1)
@@ -200,7 +302,9 @@ struct SessionRow: View {
 
                 Spacer()
 
-                badge(session.agentLabel)
+                if !inGroup {
+                    badge(session.agentLabel)
+                }
                 if !session.terminal.isEmpty, session.terminal != "Cursor", session.terminal != "VS Code" {
                     badge(session.terminal)
                 }
@@ -221,11 +325,26 @@ struct SessionRow: View {
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 8)
-        .background(
-            RoundedRectangle(cornerRadius: 10)
-                .fill(hovering ? Color.white.opacity(0.07) : Color.white.opacity(0.03))
-        )
+        .background(rowBackground)
+        .overlay(rowBorder)
+        .animation(.easeInOut(duration: 0.4), value: blinkPhase)
         .onHover { hovering = $0 }
+    }
+
+    private var rowBackground: some View {
+        RoundedRectangle(cornerRadius: 10)
+            .fill(
+                session.blinkColor.map { Color(nsColor: $0).opacity(blinkPhase ? 0.22 : 0.06) }
+                    ?? (hovering ? Color.white.opacity(0.07) : Color.white.opacity(0.03))
+            )
+    }
+
+    private var rowBorder: some View {
+        RoundedRectangle(cornerRadius: 10)
+            .stroke(
+                session.blinkColor.map { Color(nsColor: $0).opacity(blinkPhase ? 0.9 : 0.25) } ?? Color.clear,
+                lineWidth: session.blinkColor != nil ? 1.5 : 0
+            )
     }
 
     private func badge(_ text: String) -> some View {
@@ -240,11 +359,11 @@ struct SessionRow: View {
     private func permissionCard(_ p: PermissionRequest) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 6) {
-                Text("⚠️")
-                    .font(.system(size: 11))
+                Text("🔵")
+                    .font(.system(size: 9))
                 Text(p.summary)
                     .font(.system(size: 11, weight: .semibold, design: .monospaced))
-                    .foregroundColor(.orange)
+                    .foregroundColor(Color(nsColor: .systemBlue))
                     .lineLimit(1)
             }
             if !p.lines.isEmpty {
@@ -282,7 +401,7 @@ struct SessionRow: View {
             }
         }
         .padding(10)
-        .background(RoundedRectangle(cornerRadius: 8).fill(Color.orange.opacity(0.08)))
+        .background(RoundedRectangle(cornerRadius: 8).fill(Color.blue.opacity(0.08)))
     }
 
     private func questionCard(_ q: PendingQuestion) -> some View {
@@ -292,7 +411,7 @@ struct SessionRow: View {
                     .font(.system(size: 11))
                 Text(q.text.isEmpty ? "エージェントからの質問" : q.text)
                     .font(.system(size: 11, weight: .semibold))
-                    .foregroundColor(Color(nsColor: .systemCyan))
+                    .foregroundColor(Color(nsColor: .systemBlue))
                     .lineLimit(2)
             }
             if q.options.isEmpty {
@@ -332,7 +451,7 @@ struct SessionRow: View {
             }
         }
         .padding(10)
-        .background(RoundedRectangle(cornerRadius: 8).fill(Color.cyan.opacity(0.06)))
+        .background(RoundedRectangle(cornerRadius: 8).fill(Color.blue.opacity(0.06)))
     }
 
     private func diffColor(_ line: String) -> Color {

@@ -21,6 +21,8 @@ final class NotchWindowController {
     let store: SessionStore
     let ui = UIState()
     private var collapseWork: DispatchWorkItem?
+    /// 完了通知などでパネルを一時的に開いている期限
+    private var flashUntil = Date.distantPast
 
     static let expandedWidth: CGFloat = 680
     static let expandedHeight: CGFloat = 520
@@ -47,6 +49,7 @@ final class NotchWindowController {
             hover: { [weak self] inside in self?.hoverChanged(inside) },
             jump: { [weak self] s in
                 TerminalControl.jump(s)
+                self?.store.acknowledge(s.id)
                 self?.collapseSoon()
             },
             allow: { [weak self] s in
@@ -95,11 +98,18 @@ final class NotchWindowController {
     }
 
     func refreshPin() {
-        if store.hasPending {
+        if store.needsAttention {
             setExpanded(true)
         } else if !ui.hovering {
             collapseSoon()
         }
+    }
+
+    /// 完了時などにパネルを一時的に自動オープンする
+    func flashOpen(seconds: TimeInterval = 8) {
+        flashUntil = Date().addingTimeInterval(seconds)
+        setExpanded(true)
+        collapseSoon(after: seconds + 0.2)
     }
 
     private func hoverChanged(_ inside: Bool) {
@@ -112,16 +122,16 @@ final class NotchWindowController {
         }
     }
 
-    private func collapseSoon() {
+    private func collapseSoon(after: TimeInterval = 0.4) {
         collapseWork?.cancel()
         let work = DispatchWorkItem { [weak self] in
             guard let self else { return }
-            if !self.ui.hovering && !self.store.hasPending {
+            if !self.ui.hovering && !self.store.needsAttention && Date() >= self.flashUntil {
                 self.setExpanded(false)
             }
         }
         collapseWork = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4, execute: work)
+        DispatchQueue.main.asyncAfter(deadline: .now() + after, execute: work)
     }
 
     private func setExpanded(_ e: Bool) {
@@ -149,6 +159,9 @@ final class NotchWindowController {
             "panelVisible": panel.isVisible,
             "panelAlpha": panel.alphaValue,
             "expanded": ui.expanded,
+            "hovering": ui.hovering,
+            "needsAttention": store.needsAttention,
+            "mouseInPanel": panel.frame.contains(NSEvent.mouseLocation),
             "notchWidth": ui.notchWidth,
             "barHeight": ui.barHeight,
             "screens": screens,

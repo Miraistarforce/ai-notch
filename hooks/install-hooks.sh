@@ -30,6 +30,7 @@ events = [
     "UserPromptSubmit",
     "PreToolUse",
     "PostToolUse",
+    "PermissionRequest",
     "Notification",
     "Stop",
     "SessionEnd",

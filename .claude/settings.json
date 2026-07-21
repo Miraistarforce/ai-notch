@@ -28,7 +28,11 @@
       "Bash(screencapture -x notch-test2.png)",
       "Bash(sips -Z 1600 notch-test2.png --out notch-test2-small.png)",
       "Bash(bash \"/Users/yohei/Konosuke/ミライスターフォース/apps/mac-ai-notch/hooks/install-hooks.sh\")",
-      "Bash(curl -s -m 2 -X POST http://127.0.0.1:43110/event -H 'Content-Type: application/json' -d '{\"event\":\"remove\",\"session_id\":\"hooktest-1\"}')"
+      "Bash(curl -s -m 2 -X POST http://127.0.0.1:43110/event -H 'Content-Type: application/json' -d '{\"event\":\"remove\",\"session_id\":\"hooktest-1\"}')",
+      "Bash(banner -w 20 hi)",
+      "Bash(curl -s -m 3 http://127.0.0.1:43110/events)",
+      "Bash(python3 -c ' *)",
+      "Bash(bash hooks/install-hooks.sh)"
     ]
   }
 }

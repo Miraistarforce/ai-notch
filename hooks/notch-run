@@ -39,11 +39,13 @@ NH_EVENT="start" NH_SID="$sid" NH_TITLE="$title" NH_AGENT="$agent" \
 code=$?
 
 if [ $code -eq 0 ]; then
+  event="done"
   status="完了 — クリックで移動"
 else
-  status="終了（コード $code）"
+  event="error"
+  status="エラー終了（コード $code）"
 fi
-NH_EVENT="done" NH_SID="$sid" NH_TITLE="$title" NH_AGENT="$agent" NH_STATUS="$status" \
+NH_EVENT="$event" NH_SID="$sid" NH_TITLE="$title" NH_AGENT="$agent" NH_STATUS="$status" \
   python3 "$DIR/notch_post.py" >/dev/null 2>&1
 
 exit $code

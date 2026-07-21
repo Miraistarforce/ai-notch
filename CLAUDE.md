@@ -36,4 +36,10 @@
 
 ## イベントAPI（POST /event）
 
-Claude Code hooks形式（`hook_event_name`: SessionStart / UserPromptSubmit / PreToolUse / PostToolUse / Notification / Stop / SessionEnd）と汎用形式（`event`: start / status / done / remove）の両方を受け付ける。ターミナル特定用に `tty` / `term_program` / `iterm_session_id` / `bundle_id` を付加する。
+Claude Code hooks形式（`hook_event_name`: SessionStart / UserPromptSubmit / PreToolUse / PostToolUse / PermissionRequest / Notification / Stop / SessionEnd）と汎用形式（`event`: start / status / done / error / remove）の両方を受け付ける。ターミナル特定用に `tty` / `term_program` / `iterm_session_id` / `bundle_id` を付加する。
+
+### 検証で判明した重要な挙動
+
+- **許可プロンプトの検知は PermissionRequest hook を使う**。Notification hook（notification_type: permission_prompt）はVS Code/Cursor拡張環境では発火しないことを実測で確認済み（2026-07）。
+- PermissionRequest はダイアログ表示直前に発火し、stdout に何も出力せず exit 0 すれば通常の許可フローに進む（副作用なし）。
+- デバッグは `GET /events`（受信イベント履歴・最新50件）が最も確実。

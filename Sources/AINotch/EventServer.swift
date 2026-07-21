@@ -9,6 +9,7 @@ final class EventServer {
     var onEvent: (([String: Any]) -> Void)?
     var sessionsProvider: (() -> Data)?
     var debugProvider: (() -> Data)?
+    var eventsProvider: (() -> Data)?
 
     init(port: UInt16) throws {
         let params = NWParameters.tcp
@@ -87,6 +88,9 @@ final class EventServer {
             return httpResponse(200, "{\"ok\":true}")
         case ("GET", "/debug"):
             let data = debugProvider?() ?? Data("{}".utf8)
+            return httpResponse(200, data: data)
+        case ("GET", "/events"):
+            let data = eventsProvider?() ?? Data("[]".utf8)
             return httpResponse(200, data: data)
         default:
             return httpResponse(404, "not found")

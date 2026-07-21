@@ -7,6 +7,7 @@ enum SessionState: String {
     case waitingApproval  // ツール実行の許可待ち
     case waitingInput     // 質問への回答待ち
     case done
+    case error            // エラー・API制限などで停止
 }
 
 struct PermissionRequest {
@@ -36,6 +37,8 @@ struct AgentSession: Identifiable {
     var lastTool: PermissionRequest?
     var startedAt = Date()
     var updatedAt = Date()
+    /// ユーザーが行をクリックして確認済み（点滅・自動オープンを止める）
+    var acknowledged = false
 
     /// 表示用エージェント名。Cursor / VS Code 内で動いている場合はホストを併記する
     /// （例: claude-cursor, claude-vscode）
@@ -49,11 +52,24 @@ struct AgentSession: Identifiable {
 
     var stateColor: NSColor {
         switch state {
-        case .working: return .systemGreen
-        case .waitingApproval: return .systemOrange
-        case .waitingInput: return .systemCyan
-        case .done: return .systemBlue
+        case .working: return .systemTeal
+        case .waitingApproval: return .systemBlue
+        case .waitingInput: return .systemBlue
+        case .done: return .systemGreen
+        case .error: return .systemRed
         case .idle: return .systemGray
+        }
+    }
+
+    /// 点滅色。承認/質問待ち=青、完了=緑（直後30秒）、エラー=赤。nilなら点滅しない
+    var blinkColor: NSColor? {
+        guard !acknowledged else { return nil }
+        switch state {
+        case .waitingApproval: return .systemBlue
+        case .waitingInput: return question != nil ? .systemBlue : nil
+        case .done: return Date().timeIntervalSince(updatedAt) < 30 ? .systemGreen : nil
+        case .error: return .systemRed
+        default: return nil
         }
     }
 
@@ -68,14 +84,36 @@ struct AgentSession: Identifiable {
 
 final class SessionStore: ObservableObject {
     @Published var sessions: [AgentSession] = []
-    var onPendingChanged: (() -> Void)?
+    /// 状態変化のたびに呼ばれる（パネルの開閉判定用）
+    var onChange: (() -> Void)?
+    /// 完了時に呼ばれる（パネルを一時的に自動オープン）
+    var onFlash: (() -> Void)?
 
-    var hasPending: Bool {
-        sessions.contains { $0.state == .waitingApproval || ($0.state == .waitingInput && $0.question != nil) }
+    /// 実行中のままこの秒数イベントが来なければエラー扱いにする
+    private let staleSeconds: TimeInterval = 600
+    private var staleTimer: Timer?
+
+    init() {
+        staleTimer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in
+            self?.checkStale()
+        }
+    }
+
+    /// パネルを開いたままにすべき状態（承認待ち・選択肢付き質問・未確認エラー）
+    var needsAttention: Bool {
+        sessions.contains { s in
+            switch s.state {
+            case .waitingApproval: return true
+            case .waitingInput: return s.question != nil
+            case .error: return !s.acknowledged
+            default: return false
+            }
+        }
     }
     var workingCount: Int { sessions.filter { $0.state == .working }.count }
     var pendingCount: Int { sessions.filter { $0.state == .waitingApproval || $0.state == .waitingInput }.count }
     var doneCount: Int { sessions.filter { $0.state == .done }.count }
+    var errorCount: Int { sessions.filter { $0.state == .error }.count }
 
     // MARK: - イベント処理
 
@@ -83,7 +121,7 @@ final class SessionStore: ObservableObject {
         let ev = str(dict["hook_event_name"]).isEmpty ? str(dict["event"]) : str(dict["hook_event_name"])
         guard !ev.isEmpty else { return }
         let sid = str(dict["session_id"]).isEmpty ? "unknown" : str(dict["session_id"])
-        let hadPending = hasPending
+        var flash = false
 
         var s = sessions.first(where: { $0.id == sid }) ?? newSession(id: sid, dict: dict)
         updateEnvironment(&s, dict: dict)
@@ -110,22 +148,36 @@ final class SessionStore: ObservableObject {
                 s.state = .waitingInput
                 s.question = parseQuestion(input)
                 s.statusText = "質問に回答待ち"
+                s.acknowledged = false
                 playSound("Ping")
             } else {
                 s.state = .working
                 s.lastTool = toolDetail(tool, input)
                 s.statusText = toolStatus(tool, input)
             }
+        case "PermissionRequest":
+            // 許可ダイアログ表示の直前に発火する専用イベント（最も確実な検知手段）
+            let tool = str(dict["tool_name"])
+            let input = dict["tool_input"] as? [String: Any] ?? [:]
+            let detail = toolDetail(tool, input)
+            s.state = .waitingApproval
+            s.permission = detail
+            s.lastTool = detail
+            s.statusText = "許可待ち: \(detail.summary)"
+            s.acknowledged = false
+            playSound("Ping")
         case "PostToolUse":
             s.state = .working
             s.statusText = "考え中…"
             s.permission = nil
         case "Notification":
             let msg = str(dict["message"]).lowercased()
-            if msg.contains("permission") || msg.contains("許可") {
+            let ntype = str(dict["notification_type"])
+            if ntype == "permission_prompt" || msg.contains("permission") || msg.contains("許可") {
                 s.state = .waitingApproval
                 s.permission = s.lastTool ?? PermissionRequest(toolName: "", summary: str(dict["message"]), lines: [])
                 s.statusText = "許可待ち: \(s.permission?.summary ?? "")"
+                s.acknowledged = false
                 playSound("Ping")
             } else if msg.contains("waiting") || msg.contains("入力") {
                 s.state = .waitingInput
@@ -136,10 +188,12 @@ final class SessionStore: ObservableObject {
             s.statusText = "完了 — クリックで移動"
             s.permission = nil
             s.question = nil
+            s.acknowledged = false
+            flash = true
             playSound("Glass")
         case "SessionEnd":
             sessions.removeAll { $0.id == sid }
-            notifyPendingIfChanged(hadPending)
+            onChange?()
             return
         // 汎用イベント（notch-run / notch-report / codex-notify 用）
         case "start":
@@ -153,10 +207,20 @@ final class SessionStore: ObservableObject {
             s.state = .done
             let st = str(dict["status"])
             s.statusText = st.isEmpty ? "完了 — クリックで移動" : st
+            s.acknowledged = false
+            flash = true
             playSound("Glass")
+        case "error":
+            s.state = .error
+            let st = str(dict["status"])
+            s.statusText = st.isEmpty ? "エラーが発生しました" : st
+            s.permission = nil
+            s.question = nil
+            s.acknowledged = false
+            playSound("Basso")
         case "remove":
             sessions.removeAll { $0.id == sid }
-            notifyPendingIfChanged(hadPending)
+            onChange?()
             return
         default:
             break
@@ -165,7 +229,8 @@ final class SessionStore: ObservableObject {
         upsert(s)
         purge()
         sortSessions()
-        notifyPendingIfChanged(hadPending)
+        onChange?()
+        if flash { onFlash?() }
     }
 
     func clearFinished() {
@@ -179,7 +244,32 @@ final class SessionStore: ObservableObject {
         sessions[i].statusText = text
         sessions[i].permission = nil
         sessions[i].question = nil
-        onPendingChanged?()
+        onChange?()
+    }
+
+    /// 行クリックで確認済みにする（点滅・自動オープンを止める）
+    func acknowledge(_ id: String) {
+        guard let i = sessions.firstIndex(where: { $0.id == id }) else { return }
+        sessions[i].acknowledged = true
+        onChange?()
+    }
+
+    /// 実行中のまま長時間イベントが来ないセッションをエラー扱いにする
+    private func checkStale() {
+        var changed = false
+        for i in sessions.indices where sessions[i].state == .working {
+            if Date().timeIntervalSince(sessions[i].updatedAt) > staleSeconds {
+                sessions[i].state = .error
+                sessions[i].statusText = "応答が停止しています（エラー/API制限の可能性）"
+                sessions[i].acknowledged = false
+                changed = true
+            }
+        }
+        if changed {
+            playSound("Basso")
+            sortSessions()
+            onChange?()
+        }
     }
 
     func sessionsJSON() -> Data {
@@ -193,10 +283,6 @@ final class SessionStore: ObservableObject {
     }
 
     // MARK: - 内部処理
-
-    private func notifyPendingIfChanged(_ hadPending: Bool) {
-        if hadPending != hasPending || hasPending { onPendingChanged?() }
-    }
 
     private func newSession(id: String, dict: [String: Any]) -> AgentSession {
         AgentSession(
@@ -245,7 +331,7 @@ final class SessionStore: ObservableObject {
     private func sortSessions() {
         let rank: (AgentSession) -> Int = { s in
             switch s.state {
-            case .waitingApproval, .waitingInput: return 0
+            case .waitingApproval, .waitingInput, .error: return 0
             case .working: return 1
             case .idle: return 2
             case .done: return 3

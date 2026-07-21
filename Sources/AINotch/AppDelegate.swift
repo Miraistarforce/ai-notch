@@ -7,21 +7,42 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     var windowController: NotchWindowController!
     var statusItem: NSStatusItem?
     let port: UInt16 = UInt16(ProcessInfo.processInfo.environment["NOTCH_PORT"] ?? "") ?? 43110
+    /// 受信イベントの履歴（デバッグ用、最新50件）
+    private var recentEvents: [[String: Any]] = []
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
 
         store = SessionStore()
         windowController = NotchWindowController(store: store)
-        store.onPendingChanged = { [weak self] in
+        store.onChange = { [weak self] in
             self?.windowController.refreshPin()
+        }
+        store.onFlash = { [weak self] in
+            self?.windowController.flashOpen()
         }
         windowController.show()
 
         do {
             let server = try EventServer(port: port)
             server.onEvent = { [weak self] dict in
-                DispatchQueue.main.async { self?.store.handle(dict) }
+                DispatchQueue.main.async {
+                    guard let self else { return }
+                    var rec = dict
+                    rec["received_at"] = ISO8601DateFormatter().string(from: Date())
+                    self.recentEvents.append(rec)
+                    if self.recentEvents.count > 50 { self.recentEvents.removeFirst() }
+                    self.store.handle(dict)
+                }
+            }
+            server.eventsProvider = { [weak self] in
+                var data = Data("[]".utf8)
+                if let self {
+                    DispatchQueue.main.sync {
+                        data = (try? JSONSerialization.data(withJSONObject: self.recentEvents, options: [.prettyPrinted])) ?? data
+                    }
+                }
+                return data
             }
             server.sessionsProvider = { [weak self] in
                 var data = Data("[]".utf8)
@@ -77,24 +98,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func sendTestEvent() {
+        // 同一フォルダで2エージェント（グループ枠のデモ）＋ 別フォルダでエラー（赤点滅のデモ）
+        let folder = "/Users/yohei/proj/mac-ai-notch"
         store.handle([
-            "event": "start",
+            "hook_event_name": "SessionStart",
             "session_id": "demo-1",
-            "title": "認証バグの修正",
-            "agent": "Claude",
-            "term_program": "iTerm.app",
-            "status": "middleware.ts を編集中",
+            "cwd": folder,
+            "bundle_id": "com.todesktop.230313mzl4w4u92",
         ])
         store.handle([
             "event": "start",
             "session_id": "demo-2",
-            "title": "クエリの最適化",
-            "agent": "Gemini",
-            "term_program": "ghostty",
+            "agent": "Codex",
+            "cwd": folder,
+            "status": "テストを実行中",
         ])
         store.handle([
             "hook_event_name": "PreToolUse",
             "session_id": "demo-1",
+            "cwd": folder,
             "tool_name": "Edit",
             "tool_input": [
                 "file_path": "src/auth/middleware.ts",
@@ -105,7 +127,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         store.handle([
             "hook_event_name": "Notification",
             "session_id": "demo-1",
+            "cwd": folder,
             "message": "Claude needs your permission to use Edit",
+        ])
+        store.handle([
+            "event": "start",
+            "session_id": "demo-3",
+            "agent": "Gemini",
+            "cwd": "/Users/yohei/proj/backend",
+            "term_program": "ghostty",
+        ])
+        store.handle([
+            "event": "error",
+            "session_id": "demo-3",
+            "status": "API制限で停止しました（デモ）",
         ])
     }
 
