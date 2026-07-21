@@ -36,7 +36,8 @@
       "Bash(security find-identity *)",
       "Bash(tccutil reset *)",
       "Bash(codesign -dv dist/AINotch.app)",
-      "Bash(git -c user.name=Miraistarforce -c user.email=miraistarforce@gmail.com commit -q -m '点滅の枠線を削除し背景のみに、Apple Development署名で権限をリビルド後も維持 *)"
+      "Bash(git -c user.name=Miraistarforce -c user.email=miraistarforce@gmail.com commit -q -m '点滅の枠線を削除し背景のみに、Apple Development署名で権限をリビルド後も維持 *)",
+      "Bash(git -c user.name=Miraistarforce -c user.email=miraistarforce@gmail.com commit -q -m '閉じたノッチにClawdの歩行アニメーションを追加 *)"
     ]
   }
 }

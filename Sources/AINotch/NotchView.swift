@@ -68,27 +68,35 @@ struct CollapsedBar: View {
         TimelineView(.periodic(from: .now, by: 1.4)) { ctx in
             let phase = Int(ctx.date.timeIntervalSinceReferenceDate / 1.4) % 2 == 0
             HStack(spacing: 0) {
-                // 左側：セッションごとの状態ドット（点滅対応）
-                HStack(spacing: 5) {
-                    if store.sessions.isEmpty {
-                        Circle().fill(Color.gray.opacity(0.6)).frame(width: 6, height: 6)
-                    } else {
-                        ForEach(store.sessions.prefix(5)) { s in
-                            Circle()
-                                .fill(Color(nsColor: s.blinkColor ?? s.stateColor))
-                                .frame(width: 6, height: 6)
-                                .opacity(s.blinkColor != nil && !phase ? 0.25 : 1.0)
-                        }
-                    }
+                // 左側：ノッチの中を歩き回るClawd
+                ZStack {
+                    ClawdWalker(
+                        range: (NotchWindowController.sideWidth - 44) / 2,
+                        active: !store.sessions.isEmpty
+                    )
                 }
-                .frame(width: NotchWindowController.sideWidth)
+                .frame(width: NotchWindowController.sideWidth, height: ui.barHeight, alignment: .bottom)
 
                 Spacer(minLength: ui.notchWidth)
 
-                // 右側：サマリーテキスト
-                summary(phase: phase)
-                    .font(.system(size: 11, weight: .medium))
-                    .frame(width: NotchWindowController.sideWidth)
+                // 右側：状態ドット＋サマリーテキスト
+                HStack(spacing: 6) {
+                    HStack(spacing: 4) {
+                        if store.sessions.isEmpty {
+                            Circle().fill(Color.gray.opacity(0.6)).frame(width: 6, height: 6)
+                        } else {
+                            ForEach(store.sessions.prefix(4)) { s in
+                                Circle()
+                                    .fill(Color(nsColor: s.blinkColor ?? s.stateColor))
+                                    .frame(width: 6, height: 6)
+                                    .opacity(s.blinkColor != nil && !phase ? 0.25 : 1.0)
+                            }
+                        }
+                    }
+                    summary(phase: phase)
+                        .font(.system(size: 11, weight: .medium))
+                }
+                .frame(width: NotchWindowController.sideWidth)
             }
             .frame(height: ui.barHeight)
             .frame(maxWidth: .infinity)
