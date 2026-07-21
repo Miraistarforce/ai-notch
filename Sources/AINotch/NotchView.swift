@@ -68,11 +68,11 @@ struct CollapsedBar: View {
         TimelineView(.periodic(from: .now, by: 1.4)) { ctx in
             let phase = Int(ctx.date.timeIntervalSinceReferenceDate / 1.4) % 2 == 0
             HStack(spacing: 0) {
-                // 左側：ノッチの中を歩き回るClawd
+                // 左側：ノッチの中を歩き回るClawd（状態に応じてアニメーション変化）
                 ZStack {
                     ClawdWalker(
                         range: (NotchWindowController.sideWidth - 44) / 2,
-                        active: !store.sessions.isEmpty
+                        mode: store.clawdMode
                     )
                 }
                 .frame(width: NotchWindowController.sideWidth, height: ui.barHeight, alignment: .bottom)
@@ -197,9 +197,9 @@ struct ExpandedPanel: View {
 
     private var header: some View {
         HStack(spacing: 10) {
-            Text("🏝 AIエージェント")
-                .font(.system(size: 13, weight: .bold))
-                .foregroundColor(.white)
+            // 閉じた状態と同じClawdアニメーションをヘッダーに表示
+            ClawdWalker(range: 12, mode: store.clawdMode)
+                .frame(width: 52, height: 27, alignment: .bottom)
             Spacer()
             HStack(spacing: 12) {
                 statChip(color: Color(nsColor: .systemTeal), label: "実行中", count: store.workingCount)

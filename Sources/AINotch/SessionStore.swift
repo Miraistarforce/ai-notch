@@ -130,6 +130,23 @@ final class SessionStore: ObservableObject {
         sessions.filter { $0.blinkColor != nil && !$0.isOnScreen }.count
     }
 
+    /// Clawdアニメーションの状態（優先度: エラー > 承認待ち > 完了の喜び > 作業中 > 散歩 > 待機）
+    var clawdMode: ClawdMode {
+        if sessions.contains(where: { $0.state == .error && !$0.acknowledged }) {
+            return .alert(isError: true)
+        }
+        if sessions.contains(where: {
+            ($0.state == .waitingApproval || ($0.state == .waitingInput && $0.question != nil)) && !$0.acknowledged
+        }) {
+            return .alert(isError: false)
+        }
+        if sessions.contains(where: { $0.state == .done && $0.blinkColor != nil }) {
+            return .joy
+        }
+        if workingCount > 0 { return .work }
+        return sessions.isEmpty ? .idle : .walk
+    }
+
     /// アプリ切り替え時に呼ぶ。点滅中の完了/エラーのセッションの画面を開いたら
     /// 「確認済み」にして点滅を解除する（承認待ちは画面を離れたら再点滅させたいので解除しない）
     func frontmostChanged(_ bundleId: String?) {
