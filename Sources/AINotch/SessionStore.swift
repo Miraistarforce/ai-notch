@@ -37,6 +37,16 @@ struct AgentSession: Identifiable {
     var startedAt = Date()
     var updatedAt = Date()
 
+    /// 表示用エージェント名。Cursor / VS Code 内で動いている場合はホストを併記する
+    /// （例: claude-cursor, claude-vscode）
+    var agentLabel: String {
+        switch terminal {
+        case "Cursor": return "\(agent.lowercased())-cursor"
+        case "VS Code": return "\(agent.lowercased())-vscode"
+        default: return agent
+        }
+    }
+
     var stateColor: NSColor {
         switch state {
         case .working: return .systemGreen
@@ -79,15 +89,16 @@ final class SessionStore: ObservableObject {
         updateEnvironment(&s, dict: dict)
         s.updatedAt = Date()
 
+        // Claude Code hooks経由のセッションは、開いているフォルダ名をタイトルにする
+        if !str(dict["hook_event_name"]).isEmpty, !s.cwd.isEmpty {
+            s.title = (s.cwd as NSString).lastPathComponent
+        }
+
         switch ev {
         case "SessionStart":
             s.state = .idle
             s.statusText = "起動しました"
         case "UserPromptSubmit":
-            let prompt = str(dict["prompt"])
-            if !prompt.isEmpty, s.title == defaultTitle(dict) || s.title.isEmpty {
-                s.title = truncate(prompt.replacingOccurrences(of: "\n", with: " "), 32)
-            }
             s.state = .working
             s.statusText = "考え中…"
             s.permission = nil
@@ -174,7 +185,7 @@ final class SessionStore: ObservableObject {
     func sessionsJSON() -> Data {
         let arr: [[String: Any]] = sessions.map { s in
             [
-                "id": s.id, "title": s.title, "agent": s.agent, "terminal": s.terminal,
+                "id": s.id, "title": s.title, "agent": s.agentLabel, "terminal": s.terminal,
                 "state": s.state.rawValue, "status": s.statusText, "tty": s.tty,
             ]
         }
@@ -354,10 +365,30 @@ final class SessionStore: ObservableObject {
         case "WezTerm": return "WezTerm"
         case "kitty": return "kitty"
         case "vscode":
-            if bundleId.contains("todesktop") || bundleId.lowercased().contains("cursor") { return "Cursor" }
+            if isCursor(bundleId) { return "Cursor" }
             return "VS Code"
-        case "": return ""
+        case "":
+            // TERM_PROGRAMが無い環境（エディタ拡張内など）はバンドルIDから推測
+            return terminalFromBundleId(bundleId)
         default: return termProgram
         }
+    }
+
+    private func isCursor(_ bundleId: String) -> Bool {
+        bundleId.contains("todesktop") || bundleId.lowercased().contains("cursor")
+    }
+
+    private func terminalFromBundleId(_ bundleId: String) -> String {
+        let b = bundleId.lowercased()
+        if b.isEmpty { return "" }
+        if isCursor(bundleId) { return "Cursor" }
+        if b.contains("com.microsoft.vscode") { return "VS Code" }
+        if b.contains("iterm") { return "iTerm" }
+        if b.contains("com.apple.terminal") { return "Terminal" }
+        if b.contains("ghostty") { return "Ghostty" }
+        if b.contains("warp") { return "Warp" }
+        if b.contains("wezterm") { return "WezTerm" }
+        if b.contains("kitty") { return "kitty" }
+        return ""
     }
 }

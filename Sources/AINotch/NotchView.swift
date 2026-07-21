@@ -200,8 +200,8 @@ struct SessionRow: View {
 
                 Spacer()
 
-                badge(session.agent)
-                if !session.terminal.isEmpty {
+                badge(session.agentLabel)
+                if !session.terminal.isEmpty, session.terminal != "Cursor", session.terminal != "VS Code" {
                     badge(session.terminal)
                 }
                 Text(session.elapsedText)
