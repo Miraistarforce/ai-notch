@@ -6,6 +6,70 @@ final class UIState: ObservableObject {
     @Published var hovering = false
     @Published var notchWidth: CGFloat = 190
     @Published var barHeight: CGFloat = 34
+    /// 展開パネルの実際の描画高さ（クリック透過の判定用。再描画不要なので非Published）
+    var panelContentHeight: CGFloat = 0
+}
+
+/// 承認カード表示中だけ有効になるグローバルEnterキー監視（CGEventTap）。
+/// Enterを消費して「はい」を選択する。アクセシビリティ許可がないと何もしない。
+private final class ApprovalKeyMonitor {
+    /// Enterが押されたときに呼ばれる。trueを返すとキーイベントを消費する
+    var onEnter: (() -> Bool)?
+    private var tap: CFMachPort?
+    private var source: CFRunLoopSource?
+
+    func start() {
+        guard tap == nil else { return }
+        let callback: CGEventTapCallBack = { _, type, event, userInfo in
+            guard let userInfo else { return Unmanaged.passUnretained(event) }
+            let monitor = Unmanaged<ApprovalKeyMonitor>.fromOpaque(userInfo).takeUnretainedValue()
+            if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
+                if let t = monitor.tap { CGEvent.tapEnable(tap: t, enable: true) }
+                return Unmanaged.passUnretained(event)
+            }
+            if type == .keyDown {
+                let keyCode = event.getIntegerValueField(.keyboardEventKeycode)
+                // 36 = Return, 76 = テンキーEnter
+                if keyCode == 36 || keyCode == 76, monitor.onEnter?() == true {
+                    return nil
+                }
+            }
+            return Unmanaged.passUnretained(event)
+        }
+        guard let tap = CGEvent.tapCreate(
+            tap: .cgSessionEventTap,
+            place: .headInsertEventTap,
+            options: .defaultTap,
+            eventsOfInterest: CGEventMask(1 << CGEventType.keyDown.rawValue),
+            callback: callback,
+            userInfo: Unmanaged.passUnretained(self).toOpaque()
+        ) else { return }
+        self.tap = tap
+        source = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0)
+        CFRunLoopAddSource(CFRunLoopGetMain(), source, .commonModes)
+    }
+
+    func stop() {
+        if let source { CFRunLoopRemoveSource(CFRunLoopGetMain(), source, .commonModes) }
+        if let tap { CGEvent.tapEnable(tap: tap, enable: false) }
+        source = nil
+        tap = nil
+    }
+
+    deinit { stop() }
+}
+
+/// 見えているコンテンツの外側（ウィンドウ枠内の透明部分）へのクリックを
+/// 下のウィンドウに通すホスティングビュー
+private final class PassthroughHostingView: NSHostingView<NotchRootView> {
+    var interactiveHeight: () -> CGFloat = { 0 }
+
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        let p = convert(point, from: superview)
+        let fromTop = isFlipped ? p.y : bounds.height - p.y
+        guard fromTop <= interactiveHeight() else { return nil }
+        return super.hitTest(point)
+    }
 }
 
 struct NotchActions {
@@ -28,13 +92,22 @@ final class NotchWindowController {
     private var lastAttentionCount = 0
     private var outsideClickMonitor: Any?
 
-    // ゴースト化：バー（ノッチ上部の帯）に2秒マウスを置くと半透明＋クリック透過になり、
+    // ゴースト化：バー（ノッチ上部の帯）に0.3秒マウスを置くと半透明＋クリック透過になり、
     // バーに隠れたメニューバー項目を見て・クリックできる。マウスが離れたら元に戻る。
     private var ghostTimer: Timer?
     private var ghostHoverStart: Date?
     private var ghosted = false
-    private static let ghostDelay: TimeInterval = 2.0
+    private static let ghostDelay: TimeInterval = 0.3
     private static let ghostAlpha: CGFloat = 0.18
+
+    // 展開パネルは自動的に閉じる（マウスが乗っている間は閉じない）。
+    // 完了通知だけで開いたときは1秒、それ以外（承認待ち・エラー等）は1.5秒。
+    private var autoCloseWork: DispatchWorkItem?
+    private static let autoCloseDelay: TimeInterval = 1.5
+    private static let autoCloseDelayDone: TimeInterval = 1.0
+
+    // ノッチ展開中に承認待ちがあるときだけ、Enterキーで「はい」を選択できる
+    private let keyMonitor = ApprovalKeyMonitor()
 
     static let expandedWidth: CGFloat = 680
     static let expandedHeight: CGFloat = 520
@@ -71,6 +144,7 @@ final class NotchWindowController {
                     TerminalControl.approve(s)
                     self?.store.markDecisionSent(s.id, text: "許可を送信しました…")
                 }
+                self?.collapseAfterDecision()
             },
             allowAlways: { [weak self] s in
                 if s.awaitingHookDecision {
@@ -79,6 +153,7 @@ final class NotchWindowController {
                     TerminalControl.answer(s, option: 2)
                     self?.store.markDecisionSent(s.id, text: "許可（今後確認なし）を送信しました…")
                 }
+                self?.collapseAfterDecision()
             },
             deny: { [weak self] s in
                 if s.awaitingHookDecision {
@@ -87,17 +162,28 @@ final class NotchWindowController {
                     TerminalControl.deny(s)
                     self?.store.markDecisionSent(s.id, text: "拒否を送信しました…")
                 }
+                self?.collapseAfterDecision()
             },
             answer: { [weak self] s, i in
                 TerminalControl.answer(s, option: i)
                 self?.store.markDecisionSent(s.id, text: "回答 \(i) を送信しました…")
+                self?.collapseAfterDecision()
             },
             acknowledge: { [weak self] s in
                 self?.store.acknowledge(s.id)
             }
         )
         let root = NotchRootView(store: store, ui: ui, actions: actions)
-        panel.contentView = NSHostingView(rootView: root)
+        let host = PassthroughHostingView(rootView: root)
+        host.interactiveHeight = { [weak self] in
+            guard let self else { return 0 }
+            if self.ui.expanded {
+                let h = self.ui.panelContentHeight
+                return h > 0 ? h : Self.expandedHeight
+            }
+            return self.ui.barHeight
+        }
+        panel.contentView = host
 
         // ノッチの外側をクリックしたら閉じる（他アプリへのクリックはグローバルモニターで拾う）
         outsideClickMonitor = NSEvent.addGlobalMonitorForEvents(
@@ -106,6 +192,32 @@ final class NotchWindowController {
             guard let self, self.ui.expanded else { return }
             self.dismissed = true
             self.setExpanded(false)
+        }
+
+        // ノッチ展開中の承認待ちはEnterで「はい」（承認ボタンと同じ処理）
+        keyMonitor.onEnter = { [weak self] in
+            guard let self, self.ui.expanded else { return false }
+            guard let s = self.store.activeSessions.first(where: { $0.state == .waitingApproval }) else { return false }
+            DispatchQueue.main.async {
+                if s.awaitingHookDecision {
+                    self.store.decide(s.id, decision: "allow")
+                } else {
+                    TerminalControl.approve(s)
+                    self.store.markDecisionSent(s.id, text: "許可を送信しました…")
+                }
+                self.collapseAfterDecision()
+            }
+            return true
+        }
+    }
+
+    /// Enterキー監視は「ノッチ展開中かつ承認待ちあり」のときだけ有効にする
+    private func updateKeyCapture() {
+        let hasApproval = store.activeSessions.contains { $0.state == .waitingApproval }
+        if ui.expanded && hasApproval {
+            keyMonitor.start()
+        } else {
+            keyMonitor.stop()
         }
     }
 
@@ -155,6 +267,7 @@ final class NotchWindowController {
         } else if !ui.hovering {
             collapseSoon()
         }
+        updateKeyCapture()
     }
 
     private func hoverChanged(_ inside: Bool) {
@@ -187,7 +300,7 @@ final class NotchWindowController {
     private func startGhostWatch() {
         guard ghostTimer == nil else { return }
         ghostHoverStart = nil
-        ghostTimer = Timer.scheduledTimer(withTimeInterval: 0.2, repeats: true) { [weak self] _ in
+        ghostTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
             self?.ghostTick()
         }
     }
@@ -255,12 +368,17 @@ final class NotchWindowController {
     }
 
     private func setExpanded(_ e: Bool) {
-        guard ui.expanded != e else { return }
+        guard ui.expanded != e else {
+            updateKeyCapture()
+            return
+        }
         if e {
             // 先にウィンドウを広げてから、SwiftUI側で「ノッチから伸びる」アニメーションを再生
             applyFrame(expanded: true)
             ui.expanded = true
+            scheduleAutoClose()
         } else {
+            autoCloseWork?.cancel()
             // 縮むアニメーションを見せてからウィンドウを小さくする
             ui.expanded = false
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.36) { [weak self] in
@@ -268,6 +386,37 @@ final class NotchWindowController {
                 self.applyFrame(expanded: false)
             }
         }
+        updateKeyCapture()
+    }
+
+    /// 承認・質問に回答した後は、マウスが乗っていても0.5秒で閉じる。
+    /// ただし他のセッションの通知（承認待ち等）がまだ残っている場合は開いたままにする。
+    private func collapseAfterDecision() {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+            guard let self, self.ui.expanded else { return }
+            guard self.store.attentionCount == 0 else { return }
+            self.dismissed = true
+            self.setExpanded(false)
+        }
+    }
+
+    /// 展開から一定時間後に自動で閉じる（完了のみ=1秒、それ以外=1.5秒）。
+    /// マウスが乗っている間は閉じず、dismissed だけ立てて、
+    /// マウスが離れたとき（collapseSoon）に閉じる。
+    private func scheduleAutoClose() {
+        autoCloseWork?.cancel()
+        let attention = store.activeSessions.filter { $0.blinkColor != nil }
+        let doneOnly = !attention.isEmpty && attention.allSatisfy { $0.state == .done }
+        let delay = doneOnly ? Self.autoCloseDelayDone : Self.autoCloseDelay
+        let work = DispatchWorkItem { [weak self] in
+            guard let self, self.ui.expanded else { return }
+            self.dismissed = true
+            if !self.ui.hovering {
+                self.setExpanded(false)
+            }
+        }
+        autoCloseWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
     }
 
     private func targetScreen() -> NSScreen? {

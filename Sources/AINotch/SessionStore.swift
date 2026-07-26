@@ -65,13 +65,13 @@ struct AgentSession: Identifiable {
         }
     }
 
-    /// 点滅色。承認/質問待ち=青、完了=緑（直後60秒）、エラー=赤。nilなら点滅しない
+    /// 点滅色。承認/質問待ち=青、完了=緑（直後3秒）、エラー=赤。nilなら点滅しない
     var blinkColor: NSColor? {
         guard !acknowledged else { return nil }
         switch state {
         case .waitingApproval: return .systemBlue
         case .waitingInput: return question != nil ? .systemBlue : nil
-        case .done: return Date().timeIntervalSince(updatedAt) < 60 ? .systemGreen : nil
+        case .done: return Date().timeIntervalSince(updatedAt) < 3 ? .systemGreen : nil
         case .error: return .systemRed
         default: return nil
         }
@@ -105,8 +105,35 @@ final class SessionStore: ObservableObject {
     }
 
     @Published var sessions: [AgentSession] = []
+    /// ノッチでのフォロー休止中のフォルダ（グループキー = cwd、なければtitle）。
+    /// 休止中はイベントを受け取っても表示・点滅・自動オープン・音の対象にしない。
+    @Published var mutedFolders: Set<String> = []
     /// 状態変化のたびに呼ばれる（パネルの開閉判定用）
     var onChange: (() -> Void)?
+
+    /// フォルダグループのキー（NotchViewのfolderGroupsと同じ規則）
+    static func folderKey(_ s: AgentSession) -> String {
+        s.cwd.isEmpty ? s.title : s.cwd
+    }
+
+    func isMuted(_ s: AgentSession) -> Bool {
+        mutedFolders.contains(Self.folderKey(s))
+    }
+
+    /// 休止中でないセッション（点滅・カウント・自動オープン・Enter承認の対象）
+    var activeSessions: [AgentSession] {
+        sessions.filter { !isMuted($0) }
+    }
+
+    /// フォルダの休止⇔再開を切り替える（1秒長押しで呼ばれる）
+    func toggleMutedFolder(_ key: String) {
+        if mutedFolders.contains(key) {
+            mutedFolders.remove(key)
+        } else {
+            mutedFolders.insert(key)
+        }
+        onChange?()
+    }
 
     /// 実行中のままこの秒数イベントが来なければエラー扱いにする
     private let staleSeconds: TimeInterval = 600
@@ -133,32 +160,33 @@ final class SessionStore: ObservableObject {
     /// → 全ての点滅が解除された時点でパネルは自動で閉じる。
     var needsAttention: Bool {
         let frontmostBundleId = NSWorkspace.shared.frontmostApplication?.bundleIdentifier
-        return sessions.contains { $0.blinkColor != nil && !Self.isOnScreen($0, frontmostBundleId: frontmostBundleId) }
+        return activeSessions.contains { $0.blinkColor != nil && !Self.isOnScreen($0, frontmostBundleId: frontmostBundleId) }
     }
 
     /// 注意が必要なセッション数（外側クリックで一時的に閉じた後、新しい通知が来たら開き直す判定に使う）
     var attentionCount: Int {
         let frontmostBundleId = NSWorkspace.shared.frontmostApplication?.bundleIdentifier
-        return sessions.lazy
+        return activeSessions.lazy
             .filter { $0.blinkColor != nil && !Self.isOnScreen($0, frontmostBundleId: frontmostBundleId) }
             .count
     }
 
     /// Clawdアニメーションの状態（優先度: エラー > 承認待ち > 完了の喜び > 作業中 > 散歩 > 待機）
     var clawdMode: ClawdMode {
-        if sessions.contains(where: { $0.state == .error && !$0.acknowledged }) {
+        let active = activeSessions
+        if active.contains(where: { $0.state == .error && !$0.acknowledged }) {
             return .alert(isError: true)
         }
-        if sessions.contains(where: {
+        if active.contains(where: {
             ($0.state == .waitingApproval || ($0.state == .waitingInput && $0.question != nil)) && !$0.acknowledged
         }) {
             return .alert(isError: false)
         }
-        if sessions.contains(where: { $0.state == .done && $0.blinkColor != nil }) {
+        if active.contains(where: { $0.state == .done && $0.blinkColor != nil }) {
             return .joy
         }
         if workingCount > 0 { return .work }
-        return sessions.isEmpty ? .idle : .walk
+        return active.isEmpty ? .idle : .walk
     }
 
     /// アプリ切り替え時に呼ぶ。点滅中の完了/エラーのセッションの画面を開いたら
@@ -244,10 +272,10 @@ final class SessionStore: ObservableObject {
         }
         return decision.value
     }
-    var workingCount: Int { sessions.lazy.filter { $0.state == .working }.count }
-    var pendingCount: Int { sessions.lazy.filter { $0.state == .waitingApproval || $0.state == .waitingInput }.count }
-    var doneCount: Int { sessions.lazy.filter { $0.state == .done }.count }
-    var errorCount: Int { sessions.lazy.filter { $0.state == .error }.count }
+    var workingCount: Int { activeSessions.lazy.filter { $0.state == .working }.count }
+    var pendingCount: Int { activeSessions.lazy.filter { $0.state == .waitingApproval || $0.state == .waitingInput }.count }
+    var doneCount: Int { activeSessions.lazy.filter { $0.state == .done }.count }
+    var errorCount: Int { activeSessions.lazy.filter { $0.state == .error }.count }
 
     // MARK: - イベント処理
 
@@ -285,7 +313,7 @@ final class SessionStore: ObservableObject {
                 s.question = parseQuestion(input)
                 s.statusText = "質問に回答待ち"
                 s.acknowledged = false
-                playSound("Ping")
+                if !isMuted(s) { playSound("Ping") }
             } else {
                 s.state = .working
                 s.lastTool = toolDetail(tool, input)
@@ -305,8 +333,8 @@ final class SessionStore: ObservableObject {
             s.awaitingHookDecision = true
             s.promptId = str(dict["prompt_id"])
             decisions.removeValue(forKey: decisionKey(sid, s.promptId))
-            if s.isOnScreen {
-                // 画面を見ているならノッチは介入せず、すぐ通常のダイアログを出す
+            if s.isOnScreen || isMuted(s) {
+                // 画面を見ている・休止中ならノッチは介入せず、すぐ通常のダイアログを出す
                 decisions[decisionKey(sid, s.promptId)] = HookDecision(sessionId: sid, value: "defer")
                 s.awaitingHookDecision = false
             } else {
@@ -324,7 +352,7 @@ final class SessionStore: ObservableObject {
                 s.permission = s.lastTool ?? PermissionRequest(toolName: "", summary: str(dict["message"]), lines: [])
                 s.statusText = "許可待ち: \(s.permission?.summary ?? "")"
                 s.acknowledged = false
-                playSound("Ping")
+                if !isMuted(s) { playSound("Ping") }
             } else if msg.contains("waiting") || msg.contains("入力") {
                 s.state = .waitingInput
                 s.statusText = "入力待ち"
@@ -335,7 +363,8 @@ final class SessionStore: ObservableObject {
             s.permission = nil
             s.question = nil
             s.acknowledged = false
-            playSound("Glass")
+            if !isMuted(s) { playSound("Glass") }
+            scheduleAutoAcknowledge(sid)
         case "SessionEnd":
             removeSession(id: sid)
             onChange?()
@@ -353,7 +382,8 @@ final class SessionStore: ObservableObject {
             let st = str(dict["status"])
             s.statusText = st.isEmpty ? "完了 — クリックで移動" : st
             s.acknowledged = false
-            playSound("Glass")
+            if !isMuted(s) { playSound("Glass") }
+            scheduleAutoAcknowledge(sid)
         case "error":
             s.state = .error
             let st = str(dict["status"])
@@ -361,7 +391,7 @@ final class SessionStore: ObservableObject {
             s.permission = nil
             s.question = nil
             s.acknowledged = false
-            playSound("Basso")
+            if !isMuted(s) { playSound("Basso") }
         case "remove":
             removeSession(id: sid)
             onChange?()
@@ -391,6 +421,18 @@ final class SessionStore: ObservableObject {
         session.question = nil
         sessions[i] = session
         onChange?()
+    }
+
+    /// 完了から4秒後に自動で了解済みにする（ボタンを押さなくても点滅・注意状態を解除）
+    private func scheduleAutoAcknowledge(_ id: String) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 4) { [weak self] in
+            guard let self,
+                  let i = self.sessions.firstIndex(where: { $0.id == id }),
+                  self.sessions[i].state == .done,
+                  !self.sessions[i].acknowledged else { return }
+            self.sessions[i].acknowledged = true
+            self.onChange?()
+        }
     }
 
     /// 行クリックで確認済みにする（点滅・自動オープンを止める）

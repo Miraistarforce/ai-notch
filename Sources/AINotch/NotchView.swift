@@ -82,10 +82,10 @@ struct CollapsedBar: View {
                 // 右側：状態ドット＋サマリーテキスト
                 HStack(spacing: 6) {
                     HStack(spacing: 4) {
-                        if store.sessions.isEmpty {
+                        if store.activeSessions.isEmpty {
                             Circle().fill(Color.gray.opacity(0.6)).frame(width: 6, height: 6)
                         } else {
-                            ForEach(store.sessions.prefix(4)) { s in
+                            ForEach(store.activeSessions.prefix(4)) { s in
                                 let blinkColor = s.blinkColor
                                 Circle()
                                     .fill(Color(nsColor: blinkColor ?? s.stateColor))
@@ -166,10 +166,21 @@ struct ExpandedPanel: View {
                     ScrollView {
                         VStack(spacing: 6) {
                             ForEach(folderGroups(store.sessions)) { group in
-                                if group.sessions.count > 1 {
+                                // 1秒長押しでフォルダ単位の休止⇔再開を切り替え
+                                if store.mutedFolders.contains(group.id) {
+                                    MutedFolderTab(group: group) {
+                                        store.toggleMutedFolder(group.id)
+                                    }
+                                } else if group.sessions.count > 1 {
                                     GroupCard(group: group, actions: actions, blinkPhase: phase)
+                                        .onLongPressGesture(minimumDuration: 1.0) {
+                                            store.toggleMutedFolder(group.id)
+                                        }
                                 } else if let s = group.sessions.first {
                                     SessionRow(session: s, actions: actions, inGroup: false, blinkPhase: phase)
+                                        .onLongPressGesture(minimumDuration: 1.0) {
+                                            store.toggleMutedFolder(group.id)
+                                        }
                                 }
                             }
                         }
@@ -193,6 +204,14 @@ struct ExpandedPanel: View {
             )
             .fill(Color.black.opacity(0.97))
             .shadow(color: .black.opacity(0.45), radius: 18, y: 8)
+        )
+        // 実際の描画高さをUIStateへ渡す（枠内の透明部分をクリック透過にする判定用）
+        .background(
+            GeometryReader { geo in
+                Color.clear
+                    .onAppear { ui.panelContentHeight = geo.size.height }
+                    .onChange(of: geo.size.height) { _, h in ui.panelContentHeight = h }
+            }
         )
     }
 
@@ -235,6 +254,34 @@ struct ExpandedPanel: View {
         .padding(.vertical, 32)
     }
 
+}
+
+// MARK: - 休止中フォルダの細いタブ（1秒長押しで再開）
+
+struct MutedFolderTab: View {
+    let group: FolderGroup
+    let restore: () -> Void
+
+    var body: some View {
+        HStack(spacing: 6) {
+            RoundedRectangle(cornerRadius: 1.5)
+                .fill(group.color.opacity(0.5))
+                .frame(width: 3, height: 9)
+            Text("📁 \(group.name)")
+                .font(.system(size: 9, weight: .medium))
+                .foregroundColor(.white.opacity(0.4))
+                .lineLimit(1)
+            Text("休止中 — 長押しで再開")
+                .font(.system(size: 8))
+                .foregroundColor(.white.opacity(0.25))
+            Spacer()
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 2)
+        .background(RoundedRectangle(cornerRadius: 5).fill(Color.white.opacity(0.03)))
+        .contentShape(Rectangle())
+        .onLongPressGesture(minimumDuration: 1.0) { restore() }
+    }
 }
 
 // MARK: - フォルダグループカード（同一フォルダの複数エージェントを囲う）
@@ -339,8 +386,8 @@ struct SessionRow: View {
                     .font(.system(size: 10))
                     .foregroundColor(.white.opacity(0.4))
 
-                // 完了・エラーは「了解」で点滅を消せる（AIの画面を開かなくてよい）
-                if (session.state == .done || session.state == .error), !session.acknowledged {
+                // エラーは「了解」で点滅を消せる（完了はボタンなし・4秒後に自動了解）
+                if session.state == .error, !session.acknowledged {
                     Button(action: { actions.acknowledge(session) }) {
                         Text("了解")
                             .font(.system(size: 11, weight: .semibold))
@@ -402,7 +449,7 @@ struct SessionRow: View {
                 .background(RoundedRectangle(cornerRadius: 6).fill(Color.white.opacity(0.05)))
             }
             VStack(spacing: 4) {
-                approvalOption(1, "はい", accent: true) { actions.allow(session) }
+                approvalOption(1, "はい（Enter）", accent: true) { actions.allow(session) }
                 approvalOption(2, "はい、今後は確認しない") { actions.allowAlways(session) }
                 approvalOption(3, "いいえ — 拒否してAIに伝える") { actions.deny(session) }
             }
