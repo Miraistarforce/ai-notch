@@ -20,6 +20,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // （連携設定はこのパスを各AIの設定ファイルに書き込む）
         HookSetup.shared.syncBundledScripts()
 
+        // --enable-login-item / --disable-login-item で自動起動をGUIなしに切り替える
+        LoginItem.shared.applyLaunchArguments(CommandLine.arguments)
+
         store = SessionStore()
         windowController = NotchWindowController(store: store)
         store.onChange = { [weak self] in
@@ -120,6 +123,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             menu.addItem(info)
             menu.addItem(.separator())
             menu.addItem(NSMenuItem(title: "AI連携の設定を開く…", action: #selector(openSettings), keyEquivalent: ","))
+            let login = NSMenuItem(title: "ログイン時に自動起動", action: #selector(toggleLaunchAtLogin), keyEquivalent: "")
+            login.state = LoginItem.shared.isEnabled ? .on : .off
+            login.isEnabled = LoginItem.shared.isAvailable
+            menu.addItem(login)
             menu.addItem(.separator())
             menu.addItem(NSMenuItem(title: "テストイベントを表示", action: #selector(sendTestEvent), keyEquivalent: "t"))
             menu.addItem(NSMenuItem(title: "完了済みセッションを消去", action: #selector(clearDone), keyEquivalent: ""))
@@ -136,6 +143,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func openSettings() {
         settingsController.open()
+    }
+
+    /// メニューからの自動起動オン/オフ。失敗（macOSの承認待ち等）は理由をアラートで出す。
+    @objc private func toggleLaunchAtLogin() {
+        let item = LoginItem.shared
+        guard item.isAvailable else { return }
+        do {
+            try item.setEnabled(!item.isEnabled)
+        } catch {
+            let alert = NSAlert()
+            alert.messageText = "自動起動を設定できませんでした"
+            alert.informativeText = error.localizedDescription
+            alert.addButton(withTitle: "OK")
+            if item.needsApproval { alert.addButton(withTitle: "ログイン項目を開く") }
+            NSApp.activate(ignoringOtherApps: true)
+            if alert.runModal() == .alertSecondButtonReturn { item.openSystemSettings() }
+        }
     }
 
     /// メニューバー用のClawdアイコン（ClawdSpriteと同じピクセル配置）

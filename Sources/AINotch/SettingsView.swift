@@ -6,8 +6,15 @@ final class SettingsModel: ObservableObject {
     @Published var tools: [AITool] = []
     @Published var errorMessage: String?
 
+    // 自動起動（ログイン項目）
+    @Published var launchAtLogin = false
+    @Published var launchAtLoginAvailable = true
+    @Published var launchAtLoginNeedsApproval = false
+    @Published var launchAtLoginMessage: String?
+
     func refresh() {
         tools = HookSetup.shared.tools()
+        refreshLoginItem()
     }
 
     func toggle(_ id: String, _ on: Bool) {
@@ -18,6 +25,24 @@ final class SettingsModel: ObservableObject {
             errorMessage = error.localizedDescription
         }
         refresh()
+    }
+
+    func refreshLoginItem() {
+        let item = LoginItem.shared
+        launchAtLogin = item.isEnabled
+        launchAtLoginAvailable = item.isAvailable
+        launchAtLoginNeedsApproval = item.needsApproval
+        if !item.needsApproval { launchAtLoginMessage = nil }
+    }
+
+    func setLaunchAtLogin(_ on: Bool) {
+        do {
+            try LoginItem.shared.setEnabled(on)
+            launchAtLoginMessage = nil
+        } catch {
+            launchAtLoginMessage = error.localizedDescription
+        }
+        refreshLoginItem()
     }
 }
 
@@ -59,6 +84,11 @@ struct SettingsView: View {
 
             Divider()
 
+            // 起動設定
+            launchAtLoginRow
+
+            Divider()
+
             // フッター
             VStack(alignment: .leading, spacing: 6) {
                 if let err = model.errorMessage {
@@ -78,6 +108,60 @@ struct SettingsView: View {
             .padding(.vertical, 12)
         }
         .frame(width: 400)
+    }
+
+    /// ログイン時の自動起動トグル。Macを再起動してもノッチが出るようにする。
+    private var launchAtLoginRow: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 12) {
+                VStack(alignment: .leading, spacing: 3) {
+                    HStack(spacing: 6) {
+                        Text("ログイン時に自動起動")
+                            .font(.system(size: 13, weight: .semibold))
+                        if model.launchAtLogin {
+                            Text("オン")
+                                .font(.system(size: 9.5, weight: .medium))
+                                .padding(.horizontal, 5)
+                                .padding(.vertical, 1.5)
+                                .background(Capsule().fill(Color.green.opacity(0.18)))
+                                .foregroundStyle(.green)
+                        }
+                    }
+                    Text("Macを再起動・シャットダウンしても、ログインすると自動で立ち上がります")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                    Text(LoginItem.shared.bundlePath)
+                        .font(.system(size: 10, design: .monospaced))
+                        .foregroundStyle(.tertiary)
+                        .lineLimit(1)
+                        .truncationMode(.head)
+                }
+                Spacer()
+                Toggle("", isOn: Binding(
+                    get: { model.launchAtLogin },
+                    set: { model.setLaunchAtLogin($0) }
+                ))
+                .toggleStyle(.switch)
+                .labelsHidden()
+                .disabled(!model.launchAtLoginAvailable)
+            }
+
+            if let msg = model.launchAtLoginMessage {
+                Text(msg)
+                    .font(.system(size: 11))
+                    .foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            if model.launchAtLoginNeedsApproval {
+                Button("システム設定のログイン項目を開く") {
+                    LoginItem.shared.openSystemSettings()
+                }
+                .font(.system(size: 11))
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
+        .opacity(model.launchAtLoginAvailable ? 1 : 0.55)
     }
 
     private func toolRow(_ tool: AITool) -> some View {

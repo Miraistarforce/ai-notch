@@ -21,6 +21,7 @@
 | `Sources/AINotch/TerminalControl.swift` | ジャンプとキー送信のAppleScript |
 | `Sources/AINotch/HookSetup.swift` | AI検出と各設定ファイルへのhook登録・解除（Codexのtrust書き込み含む） |
 | `Sources/AINotch/SettingsView.swift` | 連携設定ウィンドウ（メニューバーのClawdアイコンから開く） |
+| `Sources/AINotch/LoginItem.swift` | ログイン時の自動起動（`SMAppService.mainApp`。起動引数 `--enable-login-item` / `--disable-login-item` にも対応） |
 | `hooks/notch-hook.sh` | 各AIのhooksから呼ばれる転送スクリプト（引数で codex / gemini を指定） |
 | `hooks/notch_post.py` | POST共通処理（全スクリプトが使用） |
 | `hooks/install-hooks.sh` | `~/.claude/settings.json` への登録（バックアップ+冪等） |
@@ -35,6 +36,7 @@
 5. イベントスキーマを変えるときは `SessionStore.handle` と `hooks/notch_post.py` の両方を更新。
 6. `~/.codex/config.toml` の notify は Claude Cowork が使用中。**上書き禁止**。
 7. このフォルダは独立gitリポジトリ。コミットはこの中で行う。
+8. 自動起動の登録先は**実行中の `.app` のパス**なので、`dist/` を移動・削除したら設定し直す（`make app` は同じパスに作り直すので影響なし）。状態確認は `sfltool dumpbtm | grep -A6 "Name: AINotch"`（Disposition が `enabled` ならオン）。
 
 ## イベントAPI（POST /event）
 
