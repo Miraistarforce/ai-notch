@@ -18,7 +18,8 @@
 | `Sources/AINotch/EventServer.swift` | HTTPサーバー（POST /event, GET /sessions, /health, /debug） |
 | `Sources/AINotch/NotchWindowController.swift` | ノッチ位置計算・展開/折りたたみ制御 |
 | `Sources/AINotch/NotchView.swift` | SwiftUIビュー（折りたたみバー・展開パネル・許可カード・質問カード） |
-| `Sources/AINotch/TerminalControl.swift` | ジャンプとキー送信のAppleScript |
+| `Sources/AINotch/TerminalControl.swift` | ジャンプとキー送信のAppleScript（送信先ウィンドウを特定できたときだけ送る） |
+| `Sources/AINotch/FrontWindow.swift` | アクセシビリティAPIでの**前面ウィンドウ特定**（タイトル取得・目的ウィンドウの前面化） |
 | `Sources/AINotch/HookSetup.swift` | AI検出と各設定ファイルへのhook登録・解除（Codexのtrust書き込み含む） |
 | `Sources/AINotch/SettingsView.swift` | 連携設定ウィンドウ（メニューバーのClawdアイコンから開く） |
 | `Sources/AINotch/LoginItem.swift` | ログイン時の自動起動（`SMAppService.mainApp`。起動引数 `--enable-login-item` / `--disable-login-item` にも対応） |
@@ -48,6 +49,10 @@ Claude Code hooks形式（`hook_event_name`: SessionStart / UserPromptSubmit / P
 - PermissionRequest はダイアログ表示直前に発火し、stdout に何も出力せず exit 0 すれば通常の許可フローに進む（副作用なし）。
 - **ノッチの承認はキー送信ではなくhook応答で行う**：hookが `GET /decision?session=..&prompt=..` をポーリングし、決定を `hookSpecificOutput.decision`（behavior: allow は updatedInput 必須、deny は message 必須）として stdout に出力する。決定キーは `session_id:prompt_id`（並行する承認要求を区別するため。payload に `prompt_id` と `permission_suggestions` が含まれることを実測で確認）。
 - ユーザーがそのAIの画面を開いたら decision="defer" でhookを解放し、通常のダイアログを出す。
+- **「その画面を見ているか」はウィンドウ単位で判定する**（`SessionStore.isOnScreen`）。Cursor / VS Code は1つのバンドルIDで複数のエージェントが動くため、バンドルIDの一致だけで判定すると**別ウィンドウのエージェントを見ているのに defer してしまい**、ノッチの承認がキー送信にフォールバックして前面の別のClaude Codeに入る（2026-07に実際に発生）。同じアプリで複数セッションが動いているときは、フォーカス中ウィンドウのタイトルにプロジェクト名（cwdの末尾）が含まれるかで判定し、判定できなければ「見ていない」扱いにしてhook経路を保つ。アクセシビリティ未許可のときはキー送信自体できないので従来どおりアプリ単位で判定する。
+- **キー送信は送信先を特定できたときだけ行う**（`TerminalControl.jumpThenKeys`）。iTerm=セッションUUID / Terminal=tty / エディタ=AXでタイトル一致のウィンドウが1つだけ、のいずれかで特定でき、かつ送信直前に対象アプリが前面であることを確認してから送る。特定できない場合は送らず「画面を開いて回答してください」と出す。
+- **Enterでの承認は相手が一意に決まるときだけ**（`SessionStore.enterApprovalTarget`）。承認待ちが1つ＋hook応答で返せる＋今見ているアプリで別のエージェントが動いていない、を全て満たすときのみCGEventTapを張る（常時張ると他のエージェントに打ったEnterを横取りする）。
+- 誤送信の切り分けは `GET /debug` の `accessibilityTrusted` / `frontBundleId` / `frontWindowTitle` / `enterApprovalTarget` を見る。
 - デバッグは `GET /events`（受信イベント履歴・最新50件）が最も確実。
 - **Codex CLI（0.144時点）はClaude互換のhooksに対応**（`~/.codex/hooks.json`、イベント名・ペイロード・hookSpecificOutput応答すべて同形式。対応イベントは SessionStart / UserPromptSubmit / PreToolUse / PostToolUse / PermissionRequest / Stop 等。SessionEnd / Notification は無い）。`config.toml` の notify には触らない。
 - **Codexのhookはtrust承認が必要**：登録しただけでは実行されない。`config.toml` の `[hooks.state."<hooks.jsonパス>:<snake_caseイベント名>:<グループ番号>:<ハンドラ番号>"]` に `trusted_hash` を書くと信頼される。ハッシュは「`{"event_name":...,"hooks":[{"async":false,"command":...,"timeout":600(PermissionRequestは設定値),"type":"command"}]}` をキー昇順・圧縮・非ASCII非エスケープでJSON化 → SHA-256」（openai/codex の `version_for_toml`。2026-07に実測一致を確認）。`HookSetup.codexTrustHash` が実装。ズレたらCodex内の `/hooks` で承認し直せる。

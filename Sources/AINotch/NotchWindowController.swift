@@ -138,36 +138,24 @@ final class NotchWindowController {
                 self?.collapseSoon()
             },
             allow: { [weak self] s in
-                if s.awaitingHookDecision {
-                    self?.store.decide(s.id, decision: "allow")
-                } else {
-                    TerminalControl.approve(s)
-                    self?.store.markDecisionSent(s.id, text: "許可を送信しました…")
+                self?.decide(s, hookDecision: "allow", sending: "許可を送信中…", sent: "許可を送信しました") {
+                    TerminalControl.approve(s, requirePreciseTarget: $0, completion: $1)
                 }
-                self?.collapseAfterDecision()
             },
             allowAlways: { [weak self] s in
-                if s.awaitingHookDecision {
-                    self?.store.decide(s.id, decision: "allow_always")
-                } else {
-                    TerminalControl.answer(s, option: 2)
-                    self?.store.markDecisionSent(s.id, text: "許可（今後確認なし）を送信しました…")
+                self?.decide(s, hookDecision: "allow_always", sending: "許可（今後確認なし）を送信中…", sent: "許可（今後確認なし）を送信しました") {
+                    TerminalControl.answer(s, option: 2, requirePreciseTarget: $0, completion: $1)
                 }
-                self?.collapseAfterDecision()
             },
             deny: { [weak self] s in
-                if s.awaitingHookDecision {
-                    self?.store.decide(s.id, decision: "deny")
-                } else {
-                    TerminalControl.deny(s)
-                    self?.store.markDecisionSent(s.id, text: "拒否を送信しました…")
+                self?.decide(s, hookDecision: "deny", sending: "拒否を送信中…", sent: "拒否を送信しました") {
+                    TerminalControl.deny(s, requirePreciseTarget: $0, completion: $1)
                 }
-                self?.collapseAfterDecision()
             },
             answer: { [weak self] s, i in
-                TerminalControl.answer(s, option: i)
-                self?.store.markDecisionSent(s.id, text: "回答 \(i) を送信しました…")
-                self?.collapseAfterDecision()
+                self?.decide(s, hookDecision: nil, sending: "回答 \(i) を送信中…", sent: "回答 \(i) を送信しました") {
+                    TerminalControl.answer(s, option: i, requirePreciseTarget: $0, completion: $1)
+                }
             },
             acknowledge: { [weak self] s in
                 self?.store.acknowledge(s.id)
@@ -194,27 +182,49 @@ final class NotchWindowController {
             self.setExpanded(false)
         }
 
-        // ノッチ展開中の承認待ちはEnterで「はい」（承認ボタンと同じ処理）
+        // ノッチ展開中の承認待ちはEnterで「はい」（承認ボタンと同じ処理）。
+        // 対象を一意に決められるときだけ働く（store.enterApprovalTarget を参照）
         keyMonitor.onEnter = { [weak self] in
             guard let self, self.ui.expanded else { return false }
-            guard let s = self.store.activeSessions.first(where: { $0.state == .waitingApproval }) else { return false }
+            guard let s = self.store.enterApprovalTarget else { return false }
             DispatchQueue.main.async {
-                if s.awaitingHookDecision {
-                    self.store.decide(s.id, decision: "allow")
-                } else {
-                    TerminalControl.approve(s)
-                    self.store.markDecisionSent(s.id, text: "許可を送信しました…")
-                }
+                self.store.decide(s.id, decision: "allow")
                 self.collapseAfterDecision()
             }
             return true
         }
     }
 
-    /// Enterキー監視は「ノッチ展開中かつ承認待ちあり」のときだけ有効にする
+    /// 承認・回答の送信。hookで返せるならそちら（送信先が確実）、
+    /// 返せないセッションだけキー送信にフォールバックする。
+    /// 同じアプリで複数のエージェントが動いている場合は、ウィンドウを特定できないと送らない。
+    private func decide(
+        _ s: AgentSession,
+        hookDecision: String?,
+        sending: String,
+        sent: String,
+        keySend: (Bool, @escaping (Bool) -> Void) -> Void
+    ) {
+        if let hookDecision, s.awaitingHookDecision {
+            store.decide(s.id, decision: hookDecision)
+            collapseAfterDecision()
+            return
+        }
+        store.markSending(s.id, text: sending)
+        keySend(store.hasSibling(s)) { [weak self] ok in
+            self?.store.markKeySendResult(
+                s.id,
+                success: ok,
+                text: ok ? sent : "送信先の画面を特定できませんでした — 画面を開いて回答してください"
+            )
+        }
+        collapseAfterDecision()
+    }
+
+    /// Enterキー監視は「ノッチ展開中かつEnterで承認できる相手が一意に決まる」ときだけ有効にする。
+    /// （常時有効にすると、ユーザーが別のエージェントに打ったEnterまで横取りしてしまう）
     private func updateKeyCapture() {
-        let hasApproval = store.activeSessions.contains { $0.state == .waitingApproval }
-        if ui.expanded && hasApproval {
+        if ui.expanded, store.enterApprovalTarget != nil {
             keyMonitor.start()
         } else {
             keyMonitor.stop()
@@ -434,6 +444,11 @@ final class NotchWindowController {
             ])
         }
         let info: [String: Any] = [
+            // 承認の送信先判定に効く情報（誤送信の切り分け用）
+            "accessibilityTrusted": FrontWindow.isTrusted(),
+            "frontBundleId": store.frontContext.bundleId,
+            "frontWindowTitle": store.frontContext.windowTitle,
+            "enterApprovalTarget": store.enterApprovalTarget?.id ?? "",
             "panelFrame": NSStringFromRect(panel.frame),
             "panelVisible": panel.isVisible,
             "panelAlpha": panel.alphaValue,

@@ -163,6 +163,8 @@ struct ExpandedPanel: View {
             } else {
                 TimelineView(.periodic(from: .now, by: 1.4)) { ctx in
                     let phase = Int(ctx.date.timeIntervalSinceReferenceDate / 1.4) % 2 == 0
+                    // Enterで承認できるのは対象が一意に決まるときだけ。その行にだけ「Enter」と出す
+                    let enterTargetId = store.enterApprovalTarget?.id
                     ScrollView {
                         VStack(spacing: 6) {
                             ForEach(folderGroups(store.sessions)) { group in
@@ -172,15 +174,21 @@ struct ExpandedPanel: View {
                                         store.toggleMutedFolder(group.id)
                                     }
                                 } else if group.sessions.count > 1 {
-                                    GroupCard(group: group, actions: actions, blinkPhase: phase)
+                                    GroupCard(group: group, actions: actions, blinkPhase: phase, enterTargetId: enterTargetId)
                                         .onLongPressGesture(minimumDuration: 1.0) {
                                             store.toggleMutedFolder(group.id)
                                         }
                                 } else if let s = group.sessions.first {
-                                    SessionRow(session: s, actions: actions, inGroup: false, blinkPhase: phase)
-                                        .onLongPressGesture(minimumDuration: 1.0) {
-                                            store.toggleMutedFolder(group.id)
-                                        }
+                                    SessionRow(
+                                        session: s,
+                                        actions: actions,
+                                        inGroup: false,
+                                        blinkPhase: phase,
+                                        enterTargetId: enterTargetId
+                                    )
+                                    .onLongPressGesture(minimumDuration: 1.0) {
+                                        store.toggleMutedFolder(group.id)
+                                    }
                                 }
                             }
                         }
@@ -290,6 +298,7 @@ struct GroupCard: View {
     let group: FolderGroup
     let actions: NotchActions
     let blinkPhase: Bool
+    var enterTargetId: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
@@ -310,7 +319,13 @@ struct GroupCard: View {
 
             VStack(spacing: 4) {
                 ForEach(group.sessions) { s in
-                    SessionRow(session: s, actions: actions, inGroup: true, blinkPhase: blinkPhase)
+                    SessionRow(
+                        session: s,
+                        actions: actions,
+                        inGroup: true,
+                        blinkPhase: blinkPhase,
+                        enterTargetId: enterTargetId
+                    )
                 }
             }
         }
@@ -333,6 +348,8 @@ struct SessionRow: View {
     let actions: NotchActions
     var inGroup = false
     var blinkPhase = true
+    /// Enterで承認できるセッションのID（この行が対象なら「はい（Enter）」と表示する）
+    var enterTargetId: String?
     @State private var hovering = false
 
     var body: some View {
@@ -448,14 +465,40 @@ struct SessionRow: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .background(RoundedRectangle(cornerRadius: 6).fill(Color.white.opacity(0.05)))
             }
-            VStack(spacing: 4) {
-                approvalOption(1, "はい（Enter）", accent: true) { actions.allow(session) }
-                approvalOption(2, "はい、今後は確認しない") { actions.allowAlways(session) }
-                approvalOption(3, "いいえ — 拒否してAIに伝える") { actions.deny(session) }
+            if session.hookControlled && !session.awaitingHookDecision {
+                // hookは解放済み（＝そのAIの画面に通常のダイアログが出ている）。
+                // ここで承認しても別のウィンドウに入る恐れがあるので、画面へ誘導する
+                handOffToScreen("この承認は画面のダイアログで回答してください")
+            } else {
+                VStack(spacing: 4) {
+                    approvalOption(1, session.id == enterTargetId ? "はい（Enter）" : "はい", accent: true) {
+                        actions.allow(session)
+                    }
+                    approvalOption(2, "はい、今後は確認しない") { actions.allowAlways(session) }
+                    approvalOption(3, "いいえ — 拒否してAIに伝える") { actions.deny(session) }
+                }
             }
         }
         .padding(10)
         .background(RoundedRectangle(cornerRadius: 8).fill(Color.blue.opacity(0.08)))
+    }
+
+    /// ノッチからは答えられないときの案内（誤送信を避けて画面へ誘導する）
+    private func handOffToScreen(_ message: String) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(message)
+                .font(.system(size: 11))
+                .foregroundColor(.white.opacity(0.7))
+            Button(action: { actions.jump(session) }) {
+                Text("この画面を開く")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundColor(.black)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 6)
+                    .background(RoundedRectangle(cornerRadius: 7).fill(Color.white.opacity(0.92)))
+            }
+            .buttonStyle(.plain)
+        }
     }
 
     private func approvalOption(_ n: Int, _ label: String, accent: Bool = false, action: @escaping () -> Void) -> some View {

@@ -37,7 +37,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             object: nil, queue: .main
         ) { [weak self] note in
             let app = note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication
-            self?.store.frontmostChanged(app?.bundleIdentifier)
+            self?.store.frontmostChanged(app)
         }
 
         do {

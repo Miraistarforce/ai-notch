@@ -9,32 +9,47 @@ enum TerminalControl {
     // MARK: - ジャンプ
 
     static func jump(_ s: AgentSession) {
-        workQueue.async {
-            if s.terminal == "iTerm", !s.itermUUID.isEmpty {
-                runOsascript(itermJumpScript(uuid: s.itermUUID))
-            } else if s.terminal == "Terminal", !s.tty.isEmpty {
-                runOsascript(terminalJumpScript(tty: s.tty))
-            } else {
-                activateApp(for: s)
-            }
+        workQueue.async { _ = focus(s) }
+    }
+
+    /// セッションの画面を前面に出す。**ウィンドウ（タブ）単位で特定できたか**を返す。
+    /// false＝アプリを前面にしただけで、どのウィンドウが前に来るかは分からない状態。
+    @discardableResult
+    private static func focus(_ s: AgentSession) -> Bool {
+        if s.terminal == "iTerm", !s.itermUUID.isEmpty {
+            runOsascript(itermJumpScript(uuid: s.itermUUID))
+            return true
         }
+        if s.terminal == "Terminal", !s.tty.isEmpty {
+            runOsascript(terminalJumpScript(tty: s.tty))
+            return true
+        }
+        // VS Code / Cursor はウィンドウタイトルの末尾がワークスペース名なので、それで特定する
+        if FrontWindow.raiseWindow(bundleId: s.hostBundleId, containing: s.projectName) { return true }
+        activateApp(for: s)
+        return false
     }
 
     // MARK: - キー送信（要アクセシビリティ許可）
 
     /// 許可 = Return（デフォルトの「Yes」を選択）
-    static func approve(_ s: AgentSession) {
-        jumpThenKeys(s, scripts: [keyCodeScript(36)])
+    static func approve(_ s: AgentSession, requirePreciseTarget: Bool, completion: @escaping (Bool) -> Void) {
+        jumpThenKeys(s, scripts: [keyCodeScript(36)], requirePreciseTarget: requirePreciseTarget, completion: completion)
     }
 
     /// 拒否 = Escape
-    static func deny(_ s: AgentSession) {
-        jumpThenKeys(s, scripts: [keyCodeScript(53)])
+    static func deny(_ s: AgentSession, requirePreciseTarget: Bool, completion: @escaping (Bool) -> Void) {
+        jumpThenKeys(s, scripts: [keyCodeScript(53)], requirePreciseTarget: requirePreciseTarget, completion: completion)
     }
 
     /// 選択肢 n 番を選んで Return
-    static func answer(_ s: AgentSession, option: Int) {
-        jumpThenKeys(s, scripts: [keystrokeScript("\(option)"), keyCodeScript(36)])
+    static func answer(_ s: AgentSession, option: Int, requirePreciseTarget: Bool, completion: @escaping (Bool) -> Void) {
+        jumpThenKeys(
+            s,
+            scripts: [keystrokeScript("\(option)"), keyCodeScript(36)],
+            requirePreciseTarget: requirePreciseTarget,
+            completion: completion
+        )
     }
 
     static func ensureAccessibility() -> Bool {
@@ -44,16 +59,51 @@ enum TerminalControl {
 
     // MARK: - 内部処理
 
-    private static func jumpThenKeys(_ s: AgentSession, scripts: [String]) {
+    /// 目的の画面を前面に出してからキーを送る。
+    /// キーは「今フォーカスされているウィンドウ」に入るため、送信先を取り違えると
+    /// 別のエージェントに承認が入ってしまう。そのため
+    /// 1. ウィンドウ単位で特定できたか（できなければ requirePreciseTarget の場合は中止）
+    /// 2. 送信直前に本当にそのアプリが前面か
+    /// の2点を確かめてから送る。送れたかどうかを completion（メインスレッド）で返す。
+    private static func jumpThenKeys(
+        _ s: AgentSession,
+        scripts: [String],
+        requirePreciseTarget: Bool,
+        completion: @escaping (Bool) -> Void
+    ) {
         _ = ensureAccessibility()
-        jump(s)
-        var delay = 0.5
-        for script in scripts {
-            workQueue.asyncAfter(deadline: .now() + delay) {
-                runOsascript(script)
+        workQueue.async {
+            let precise = focus(s)
+            guard precise || !requirePreciseTarget else {
+                DispatchQueue.main.async { completion(false) }
+                return
             }
-            delay += 0.3
+            workQueue.asyncAfter(deadline: .now() + 0.5) {
+                guard frontIsTarget(s) else {
+                    DispatchQueue.main.async { completion(false) }
+                    return
+                }
+                var delay = 0.0
+                for script in scripts {
+                    workQueue.asyncAfter(deadline: .now() + delay) { runOsascript(script) }
+                    delay += 0.3
+                }
+                workQueue.asyncAfter(deadline: .now() + delay) {
+                    DispatchQueue.main.async { completion(true) }
+                }
+            }
         }
+    }
+
+    /// キー送信の直前に、そのセッションのアプリが本当に前面かを確かめる
+    private static func frontIsTarget(_ s: AgentSession) -> Bool {
+        let host = s.hostBundleId
+        guard !host.isEmpty else { return false }
+        var front = ""
+        DispatchQueue.main.sync {
+            front = NSWorkspace.shared.frontmostApplication?.bundleIdentifier ?? ""
+        }
+        return front == host
     }
 
     private static func activateApp(for s: AgentSession) {

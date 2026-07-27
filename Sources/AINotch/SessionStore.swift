@@ -41,8 +41,18 @@ struct AgentSession: Identifiable {
     var acknowledged = false
     /// PermissionRequest hookがノッチの決定を待っている（trueなら承認ボタンはhook応答で機能する）
     var awaitingHookDecision = false
+    /// この承認要求が PermissionRequest hook 由来である（＝hook応答で答えられる種類のもの）。
+    /// hookControlled かつ awaitingHookDecision でない＝すでにhookを解放済みで、
+    /// ノッチからは答えられない（画面のダイアログで答えてもらう）。
+    var hookControlled = false
     /// 現在の承認プロンプトの一意ID（同一セッション内の並行承認要求を区別する）
     var promptId = ""
+
+    /// ウィンドウ照合に使うプロジェクト名（cwdの末尾。なければタイトル）。
+    /// VS Code / Cursor のウィンドウタイトルは末尾がワークスペース名なので、これで特定できる。
+    var projectName: String {
+        cwd.isEmpty ? title : (cwd as NSString).lastPathComponent
+    }
 
     /// 表示用エージェント名。Cursor / VS Code 内で動いている場合はホストを併記する
     /// （例: claude-cursor, claude-vscode）
@@ -80,13 +90,6 @@ struct AgentSession: Identifiable {
     /// このセッションが動いているホストアプリのバンドルID（不明なら空）
     var hostBundleId: String {
         bundleId.isEmpty ? TerminalControl.guessBundleId(terminal) : bundleId
-    }
-
-    /// このセッションの画面（ターミナル/エディタ）をユーザーが今見ているか
-    var isOnScreen: Bool {
-        let host = hostBundleId
-        guard !host.isEmpty else { return false }
-        return NSWorkspace.shared.frontmostApplication?.bundleIdentifier == host
     }
 
     var elapsedText: String {
@@ -132,43 +135,111 @@ final class SessionStore: ObservableObject {
         } else {
             mutedFolders.insert(key)
         }
-        onChange?()
+        notifyChanged()
     }
 
     /// 実行中のままこの秒数イベントが来なければエラー扱いにする
     private let staleSeconds: TimeInterval = 600
     private var tickTimer: Timer?
+    /// 承認待ちがある間だけ、ウィンドウの切り替えを見張るタイマー
+    private var frontWatchTimer: Timer?
+    private let probeQueue = DispatchQueue(label: "ainotch.frontwindow")
+    /// ユーザーが今見ているアプリ／ウィンドウ（キャッシュ。決定の瞬間は取り直す）
+    private var front = FrontContext()
     /// PermissionRequest hookへ渡す決定（決定キー → セッションIDと決定値）
     private var decisions: [String: HookDecision] = [:]
 
     init() {
+        front = FrontWindow.probe()
         // 定期チェック：無応答検知＋点滅の期限切れでパネルを閉じる判定を更新
         tickTimer = Timer.scheduledTimer(withTimeInterval: 15, repeats: true) { [weak self] _ in
             guard let self else { return }
             self.checkStale()
-            self.onChange?()
+            self.notifyChanged()
         }
     }
 
     deinit {
         tickTimer?.invalidate()
+        frontWatchTimer?.invalidate()
     }
 
     /// パネルを開いたままにすべき状態。
     /// 点滅中（承認待ち・質問・完了直後・エラー）のセッションのうち、
     /// ユーザーが今その画面を見ていないものが1つでもあれば true。
     /// → 全ての点滅が解除された時点でパネルは自動で閉じる。
-    var needsAttention: Bool {
-        let frontmostBundleId = NSWorkspace.shared.frontmostApplication?.bundleIdentifier
-        return activeSessions.contains { $0.blinkColor != nil && !Self.isOnScreen($0, frontmostBundleId: frontmostBundleId) }
-    }
+    var needsAttention: Bool { !attentionSessions().isEmpty }
 
     /// 注意が必要なセッション数（外側クリックで一時的に閉じた後、新しい通知が来たら開き直す判定に使う）
-    var attentionCount: Int {
-        let frontmostBundleId = NSWorkspace.shared.frontmostApplication?.bundleIdentifier
-        return activeSessions.lazy
-            .filter { $0.blinkColor != nil && !Self.isOnScreen($0, frontmostBundleId: frontmostBundleId) }
-            .count
+    var attentionCount: Int { attentionSessions().count }
+
+    private func attentionSessions() -> [AgentSession] {
+        let counts = hostCounts()
+        return activeSessions.filter {
+            $0.blinkColor != nil && !Self.isOnScreen($0, front: front, siblings: counts[$0.hostBundleId] ?? 1)
+        }
+    }
+
+    // MARK: - 「今どのセッションの画面を見ているか」の判定
+
+    /// ホストアプリごとのセッション数（同じアプリで複数動いているかの判定用）
+    private func hostCounts() -> [String: Int] {
+        var counts: [String: Int] = [:]
+        for s in sessions where !s.hostBundleId.isEmpty {
+            counts[s.hostBundleId, default: 0] += 1
+        }
+        return counts
+    }
+
+    /// このセッションと同じアプリで動いている他のセッションがあるか。
+    /// ある場合、アプリを前面にするだけでは目的のウィンドウを特定できない。
+    func hasSibling(_ s: AgentSession) -> Bool { siblings(of: s) > 1 }
+
+    private func siblings(of s: AgentSession) -> Int {
+        let host = s.hostBundleId
+        guard !host.isEmpty else { return 1 }
+        return sessions.filter { $0.id != s.id && $0.hostBundleId == host }.count + 1
+    }
+
+    /// このセッションの画面（ターミナル/エディタのウィンドウ）をユーザーが今見ているか。
+    ///
+    /// 同じアプリで複数のセッションが動いている場合、バンドルIDの一致だけでは
+    /// 「別ウィンドウの Claude Code を見ている」ケースと区別できない。
+    /// その場合はウィンドウタイトルにプロジェクト名が含まれるかで判定し、
+    /// 判定できないときは false（見ていない扱い）にする。
+    /// → 誤ってhookを解放して、承認が別ウィンドウのエージェントへ流れるのを防ぐ。
+    static func isOnScreen(_ s: AgentSession, front: FrontContext, siblings: Int) -> Bool {
+        let host = s.hostBundleId
+        guard !host.isEmpty, host == front.bundleId else { return false }
+        guard siblings > 1 else { return true }
+        // アクセシビリティ未許可の環境ではウィンドウを区別できない。
+        // ただしキー送信もできない＝誤送信は起き得ないので、従来どおりアプリ単位で判定し、
+        // 通常のダイアログ（画面側）に任せる
+        guard FrontWindow.isTrusted() else { return true }
+        let name = s.projectName
+        guard !name.isEmpty, !front.windowTitle.isEmpty else { return false }
+        return front.windowTitle.contains(name)
+    }
+
+    func isOnScreen(_ s: AgentSession) -> Bool {
+        Self.isOnScreen(s, front: front, siblings: siblings(of: s))
+    }
+
+    /// デバッグ表示用（GET /debug）
+    var frontContext: FrontContext { front }
+
+    /// Enterキーで承認してよいセッション。次の両方を満たすときだけ有効にする。
+    /// - 承認待ちがちょうど1つ、かつhook応答で確実にそのセッションへ返せる
+    ///   （複数あるとどれに返るか決められず、別のエージェントを承認してしまう）
+    /// - ユーザーが今見ているアプリが別のエージェントの画面でない
+    ///   （そちらへ打っているEnterを横取りしないため）
+    var enterApprovalTarget: AgentSession? {
+        let pending = activeSessions.filter { $0.state == .waitingApproval }
+        guard pending.count == 1, let target = pending.first, target.awaitingHookDecision else { return nil }
+        let frontHostsOther = sessions.contains {
+            $0.id != target.id && !$0.hostBundleId.isEmpty && $0.hostBundleId == front.bundleId
+        }
+        return frontHostsOther ? nil : target
     }
 
     /// Clawdアニメーションの状態（優先度: エラー > 承認待ち > 完了の喜び > 作業中 > 散歩 > 待機）
@@ -191,22 +262,41 @@ final class SessionStore: ObservableObject {
 
     /// アプリ切り替え時に呼ぶ。点滅中の完了/エラーのセッションの画面を開いたら
     /// 「確認済み」にして点滅を解除する（承認待ちは画面を離れたら再点滅させたいので解除しない）
-    func frontmostChanged(_ bundleId: String?) {
-        guard let bid = bundleId, !bid.isEmpty else {
-            onChange?()
-            return
+    func frontmostChanged(_ app: NSRunningApplication?) {
+        // ウィンドウタイトルは非同期で取り直すので、いったん空にして保守的な判定にする
+        front = FrontContext(bundleId: app?.bundleIdentifier ?? "")
+        applyFront()
+        refreshFront(app)
+    }
+
+    /// 前面ウィンドウを取り直す（同じアプリの中でのウィンドウ切り替えも拾うため定期的に呼ぶ）
+    private func refreshFront(_ app: NSRunningApplication? = nil) {
+        probeQueue.async { [weak self] in
+            let ctx = FrontWindow.probe(app)
+            DispatchQueue.main.async {
+                guard let self, ctx.bundleId != self.front.bundleId || ctx.windowTitle != self.front.windowTitle
+                else { return }
+                self.front = ctx
+                self.applyFront()
+            }
         }
+    }
+
+    /// 今見ている画面に応じて、点滅解除とhookの解放を行う
+    private func applyFront() {
+        let counts = hostCounts()
         var updated = sessions
         var sessionsChanged = false
         for i in updated.indices {
             let s = updated[i]
-            if s.hostBundleId == bid, !s.acknowledged, s.state == .done || s.state == .error {
+            guard Self.isOnScreen(s, front: front, siblings: counts[s.hostBundleId] ?? 1) else { continue }
+            if !s.acknowledged, s.state == .done || s.state == .error {
                 updated[i].acknowledged = true
                 sessionsChanged = true
             }
             // 承認待ちのセッションの画面を開いたら、hookを解放して
             // 通常の承認ダイアログをその画面に出す（ユーザーが直接答えられるように）
-            if s.hostBundleId == bid, s.state == .waitingApproval, s.awaitingHookDecision {
+            if s.state == .waitingApproval, s.awaitingHookDecision {
                 decisions[decisionKey(s.id, s.promptId)] = HookDecision(sessionId: s.id, value: "defer")
                 updated[i].awaitingHookDecision = false
                 updated[i].statusText = "画面のダイアログで回答してください"
@@ -214,6 +304,27 @@ final class SessionStore: ObservableObject {
             }
         }
         if sessionsChanged { sessions = updated }
+        notifyChanged()
+    }
+
+    /// 承認待ちがある間だけ、1秒ごとに前面ウィンドウを見張る。
+    /// （同じアプリ内でのウィンドウ切り替えはアプリ切り替え通知が飛ばないため）
+    private func updateFrontWatch() {
+        let needed = sessions.contains { $0.state == .waitingApproval && $0.awaitingHookDecision }
+        if needed {
+            guard frontWatchTimer == nil else { return }
+            frontWatchTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
+                self?.refreshFront()
+            }
+        } else {
+            frontWatchTimer?.invalidate()
+            frontWatchTimer = nil
+        }
+    }
+
+    /// 状態が変わったことを通知する（見張りタイマーの要否もここで見直す）
+    private func notifyChanged() {
+        updateFrontWatch()
         onChange?()
     }
 
@@ -223,16 +334,12 @@ final class SessionStore: ObservableObject {
         promptId.isEmpty ? sid : "\(sid):\(promptId)"
     }
 
-    private static func isOnScreen(_ session: AgentSession, frontmostBundleId: String?) -> Bool {
-        let hostBundleId = session.hostBundleId
-        return !hostBundleId.isEmpty && hostBundleId == frontmostBundleId
-    }
-
     /// ノッチのボタンから決定を登録する。hookがポーリングで受け取り、Claude Codeに直接返す。
+    /// 決定は「セッションID:プロンプトID」で紐づくので、他のエージェントには絶対に届かない。
     func decide(_ id: String, decision: String) {
         guard let i = sessions.firstIndex(where: { $0.id == id }) else {
             decisions[id] = HookDecision(sessionId: id, value: decision)
-            onChange?()
+            notifyChanged()
             return
         }
         var session = sessions[i]
@@ -256,7 +363,7 @@ final class SessionStore: ObservableObject {
             session.awaitingHookDecision = false
         }
         sessions[i] = session
-        onChange?()
+        notifyChanged()
     }
 
     /// hookのポーリングに応答する。決定があれば取り出して返す（1回限り）。
@@ -330,10 +437,15 @@ final class SessionStore: ObservableObject {
             s.lastTool = detail
             s.statusText = "許可待ち: \(detail.summary)"
             s.acknowledged = false
+            s.hookControlled = true
             s.awaitingHookDecision = true
             s.promptId = str(dict["prompt_id"])
             decisions.removeValue(forKey: decisionKey(sid, s.promptId))
-            if s.isOnScreen || isMuted(s) {
+            // 「そのセッションの画面を見ているか」はウィンドウ単位で確かめる。
+            // ここを取り違えると、hookを解放したうえでノッチのボタンがキー送信に
+            // フォールバックし、前面にある別のエージェントへ承認が入ってしまう。
+            front = FrontWindow.probe()
+            if Self.isOnScreen(s, front: front, siblings: siblings(of: s)) || isMuted(s) {
                 // 画面を見ている・休止中ならノッチは介入せず、すぐ通常のダイアログを出す
                 decisions[decisionKey(sid, s.promptId)] = HookDecision(sessionId: sid, value: "defer")
                 s.awaitingHookDecision = false
@@ -349,6 +461,9 @@ final class SessionStore: ObservableObject {
             let ntype = str(dict["notification_type"])
             if ntype == "permission_prompt" || msg.contains("permission") || msg.contains("許可") {
                 s.state = .waitingApproval
+                // hook由来ではないのでhook応答では返せない。ノッチのボタンはキー送信になる
+                s.hookControlled = false
+                s.awaitingHookDecision = false
                 s.permission = s.lastTool ?? PermissionRequest(toolName: "", summary: str(dict["message"]), lines: [])
                 s.statusText = "許可待ち: \(s.permission?.summary ?? "")"
                 s.acknowledged = false
@@ -367,7 +482,7 @@ final class SessionStore: ObservableObject {
             scheduleAutoAcknowledge(sid)
         case "SessionEnd":
             removeSession(id: sid)
-            onChange?()
+            notifyChanged()
             return
         // 汎用イベント（notch-run / notch-report / codex-notify 用）
         case "start":
@@ -394,33 +509,46 @@ final class SessionStore: ObservableObject {
             if !isMuted(s) { playSound("Basso") }
         case "remove":
             removeSession(id: sid)
-            onChange?()
+            notifyChanged()
             return
         default:
             break
         }
 
         upsertAndMaintain(s, now: now)
-        onChange?()
+        notifyChanged()
     }
 
     func clearFinished() {
         let remaining = sessions.filter { $0.state != .done && $0.state != .idle }
         guard remaining.count != sessions.count else { return }
         sessions = remaining
-        onChange?()
+        notifyChanged()
     }
 
-    /// 操作送信後の楽観的更新（キー送信がターミナル側で処理される想定）
-    func markDecisionSent(_ id: String, text: String) {
+    /// キー送信中の表示（送信先が確定するまで承認カードは消さない）
+    func markSending(_ id: String, text: String) {
+        guard let i = sessions.firstIndex(where: { $0.id == id }) else { return }
+        sessions[i].statusText = text
+        notifyChanged()
+    }
+
+    /// キー送信の結果を反映する。
+    /// 失敗＝送信先のウィンドウを特定できなかったので、承認カードを残したまま
+    /// 「画面で回答してください」と伝える（別のエージェントに送ってしまうより安全）。
+    func markKeySendResult(_ id: String, success: Bool, text: String) {
         guard let i = sessions.firstIndex(where: { $0.id == id }) else { return }
         var session = sessions[i]
-        session.state = .working
         session.statusText = text
-        session.permission = nil
-        session.question = nil
+        if success {
+            session.state = .working
+            session.permission = nil
+            session.question = nil
+        } else {
+            session.acknowledged = false
+        }
         sessions[i] = session
-        onChange?()
+        notifyChanged()
     }
 
     /// 完了から4秒後に自動で了解済みにする（ボタンを押さなくても点滅・注意状態を解除）
@@ -431,7 +559,7 @@ final class SessionStore: ObservableObject {
                   self.sessions[i].state == .done,
                   !self.sessions[i].acknowledged else { return }
             self.sessions[i].acknowledged = true
-            self.onChange?()
+            self.notifyChanged()
         }
     }
 
@@ -441,7 +569,7 @@ final class SessionStore: ObservableObject {
         var session = sessions[i]
         session.acknowledged = true
         sessions[i] = session
-        onChange?()
+        notifyChanged()
     }
 
     /// 実行中のまま長時間イベントが来ないセッションをエラー扱いにする
