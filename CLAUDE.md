@@ -72,6 +72,8 @@ Claude Code hooks形式（`hook_event_name`: SessionStart / UserPromptSubmit / P
 - PermissionRequest はダイアログ表示直前に発火し、stdout に何も出力せず exit 0 すれば通常の許可フローに進む（副作用なし）。
 - **ノッチの承認はキー送信ではなくhook応答で行う**：hookが `GET /decision?session=..&prompt=..` をポーリングし、決定を `hookSpecificOutput.decision`（behavior: allow は updatedInput 必須、deny は message 必須）として stdout に出力する。決定キーは `session_id:prompt_id`（並行する承認要求を区別するため。payload に `prompt_id` と `permission_suggestions` が含まれることを実測で確認）。
 - ユーザーがそのAIの画面を開いたら decision="defer" でhookを解放し、通常のダイアログを出す。
+- **AskUserQuestion にも PermissionRequest が飛ぶ**（2026-08-14に実測。`PreToolUse AskUserQuestion` の約1秒後に `PermissionRequest AskUserQuestion`。`tool_input.questions` は同じ中身）。これは「許可」ではないので**承認カードにしてはいけない**（昔は「はい／はい、今後は確認しない／いいえ」が出て、拒否すると質問ごと消えていた）。さらにhookを掴んだままだと**そのAIの画面に質問UIが出ない**ので、`SessionStore.applyQuestion` で質問として扱ったうえで**即座に defer** して画面側に出させる。ノッチは質問文・選択肢（読み取り専用）と「**質問に答える**」＝ジャンプボタンだけを出す。
+- **質問への回答はノッチからしない**。選択肢の番号をキー送信すると、同じアプリで動く別のエージェントに数字が入る恐れがあるため（承認と同じ事故）。`NotchActions` に answer は無い。
 - **「その画面を見ているか」はウィンドウ単位で判定する**（`SessionStore.isOnScreen`）。Cursor / VS Code は1つのバンドルIDで複数のエージェントが動くため、バンドルIDの一致だけで判定すると**別ウィンドウのエージェントを見ているのに defer してしまい**、ノッチの承認がキー送信にフォールバックして前面の別のClaude Codeに入る（2026-07に実際に発生）。同じアプリで複数セッションが動いているときは、フォーカス中ウィンドウのタイトルにプロジェクト名（cwdの末尾）が含まれるかで判定し、判定できなければ「見ていない」扱いにしてhook経路を保つ。アクセシビリティ未許可のときはキー送信自体できないので従来どおりアプリ単位で判定する。
 - **キー送信は送信先を特定できたときだけ行う**（`TerminalControl.jumpThenKeys`）。iTerm=セッションUUID / Terminal=tty / エディタ=AXでタイトル一致のウィンドウが1つだけ、のいずれかで特定でき、かつ送信直前に対象アプリが前面であることを確認してから送る。特定できない場合は送らず「画面を開いて回答してください」と出す。
 - **Enterでの承認は相手が一意に決まるときだけ**（`SessionStore.enterApprovalTarget`）。承認待ちが1つ＋hook応答で返せる＋今見ているアプリで別のエージェントが動いていない、を全て満たすときのみCGEventTapを張る（常時張ると他のエージェントに打ったEnterを横取りする）。

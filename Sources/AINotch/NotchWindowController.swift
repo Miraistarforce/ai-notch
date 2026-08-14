@@ -81,13 +81,14 @@ private final class PassthroughHostingView: NSHostingView<NotchRootView> {
     }
 }
 
+/// ノッチから起こせる操作。質問（AskUserQuestion）への回答はここに無い＝
+/// ノッチからは答えず、jump でそのAIの画面へ移動して画面側で答えてもらう。
 struct NotchActions {
     var hover: (Bool) -> Void
     var jump: (AgentSession) -> Void
     var allow: (AgentSession) -> Void
     var allowAlways: (AgentSession) -> Void
     var deny: (AgentSession) -> Void
-    var answer: (AgentSession, Int) -> Void
     var acknowledge: (AgentSession) -> Void
 }
 
@@ -165,11 +166,6 @@ final class NotchWindowController {
             deny: { [weak self] s in
                 self?.decide(s, hookDecision: "deny", sending: "拒否を送信中…", sent: "拒否を送信しました") {
                     TerminalControl.deny(s, requirePreciseTarget: $0, completion: $1)
-                }
-            },
-            answer: { [weak self] s, i in
-                self?.decide(s, hookDecision: nil, sending: "回答 \(i) を送信中…", sent: "回答 \(i) を送信しました") {
-                    TerminalControl.answer(s, option: i, requirePreciseTarget: $0, completion: $1)
                 }
             },
             acknowledge: { [weak self] s in

@@ -21,6 +21,10 @@ struct PendingQuestion {
     var options: [String]
 }
 
+/// 質問（AskUserQuestion）のツール名。許可要求と同じ PermissionRequest hook で
+/// 飛んでくるので、これだけは「許可」ではなく「質問」として扱う。
+private let questionToolName = "AskUserQuestion"
+
 struct AgentSession: Identifiable {
     let id: String
     var title: String
@@ -396,6 +400,9 @@ final class SessionStore: ObservableObject {
         var s = sessions.first(where: { $0.id == sid }) ?? newSession(id: sid, dict: dict)
         updateEnvironment(&s, dict: dict)
         let now = Date()
+        // 質問は PreToolUse と PermissionRequest の2回飛んでくるので、
+        // 「さっきまで質問待ちだったか」を見て音を鳴らし直さないようにする
+        let wasWaitingQuestion = s.state == .waitingInput && s.question != nil
         s.updatedAt = now
 
         // Claude Code hooks経由のセッションは、開いているフォルダ名をタイトルにする
@@ -415,12 +422,8 @@ final class SessionStore: ObservableObject {
         case "PreToolUse":
             let tool = str(dict["tool_name"])
             let input = dict["tool_input"] as? [String: Any] ?? [:]
-            if tool == "AskUserQuestion" {
-                s.state = .waitingInput
-                s.question = parseQuestion(input)
-                s.statusText = "質問に回答待ち"
-                s.acknowledged = false
-                if !isMuted(s) { playSound("Ping") }
+            if tool == questionToolName {
+                applyQuestion(&s, input: input, alreadyNotified: wasWaitingQuestion)
             } else {
                 s.state = .working
                 s.lastTool = toolDetail(tool, input)
@@ -431,6 +434,16 @@ final class SessionStore: ObservableObject {
             // hookはノッチの決定を待つので、ここでの承認ボタンは本物の許可/拒否として機能する。
             let tool = str(dict["tool_name"])
             let input = dict["tool_input"] as? [String: Any] ?? [:]
+            // 質問（AskUserQuestion）にもこのイベントが飛ぶ（2026-08-14に実測）。
+            // これは「許可」ではないので承認カードにしてはいけない。しかもhookを掴んだままだと
+            // そのAIの画面に質問UIが出ないので、すぐdeferで解放して画面側に出させる。
+            // ノッチは内容と「質問に答える」（＝その画面へ移動）だけを出す。
+            if tool == questionToolName {
+                let promptId = str(dict["prompt_id"])
+                applyQuestion(&s, input: input, alreadyNotified: wasWaitingQuestion)
+                decisions[decisionKey(sid, promptId)] = HookDecision(sessionId: sid, value: "defer")
+                break
+            }
             let detail = toolDetail(tool, input)
             s.state = .waitingApproval
             s.permission = detail
@@ -456,6 +469,8 @@ final class SessionStore: ObservableObject {
             s.state = .working
             s.statusText = "考え中…"
             s.permission = nil
+            // 質問に答え終わった直後もここに来る（回答済みなので質問カードは消す）
+            s.question = nil
         case "Notification":
             let msg = str(dict["message"]).lowercased()
             let ntype = str(dict["notification_type"])
@@ -751,9 +766,26 @@ final class SessionStore: ObservableObject {
         return PermissionRequest(toolName: tool, summary: summary, lines: lines.map { truncate($0, 160) })
     }
 
+    /// 「AIからの質問」をセッションに反映する（PreToolUse と PermissionRequest の両方から呼ばれる）。
+    /// 許可要求と違い、ノッチからは答えない（＝hookで返さない・キーも送らない）。
+    /// 答えるのはそのAIの画面なので、ノッチは内容と移動ボタンだけを出す。
+    private func applyQuestion(_ s: inout AgentSession, input: [String: Any], alreadyNotified: Bool) {
+        s.state = .waitingInput
+        s.question = parseQuestion(input)
+        s.permission = nil
+        s.statusText = "質問に回答待ち"
+        s.acknowledged = false
+        s.hookControlled = false
+        s.awaitingHookDecision = false
+        // 同じ質問で2回鳴らさない（PreToolUse → PermissionRequest と続けて飛んでくるため）
+        if !alreadyNotified, !isMuted(s) { playSound("Ping") }
+    }
+
     private func parseQuestion(_ input: [String: Any]) -> PendingQuestion {
         if let questions = input["questions"] as? [[String: Any]], let q = questions.first {
-            let text = str(q["question"])
+            var text = str(q["question"])
+            // 一度に複数問聞かれることがある。ノッチは1問目だけ出して、残りは件数で示す
+            if questions.count > 1 { text += "（他 \(questions.count - 1) 問）" }
             let options = (q["options"] as? [[String: Any]])?.compactMap { $0["label"] as? String } ?? []
             return PendingQuestion(text: text, options: options)
         }

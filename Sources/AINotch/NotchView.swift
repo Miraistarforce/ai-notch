@@ -395,6 +395,8 @@ struct SessionRow: View {
 
     /// 承認カードに出す差分の最大行数。残りは「…他N行」で示す
     static let maxDiffLines = 6
+    /// 質問カードに出す選択肢の最大数。残りは「…他N件」で示す
+    static let maxQuestionOptions = 4
 
     private var isPending: Bool {
         session.state == .waitingApproval || session.state == .waitingInput
@@ -405,14 +407,12 @@ struct SessionRow: View {
         VStack(alignment: .leading, spacing: 8) {
             headerRow(blinkColor: blinkColor)
 
-            if showDetail {
-                // 承認待ちは最初から内容と承認ボタンを展開表示する
-                if session.state == .waitingApproval, let p = session.permission {
-                    approvalDetail(p)
-                }
-                if let q = session.question, session.state == .waitingInput {
-                    questionCard(q)
-                }
+            // 承認待ちは内容と承認ボタン、質問は内容と移動ボタンを展開表示する。
+            // 中身を出せないとき（詳細は他の行・内容が未取得）は、あることだけ伝える
+            if showDetail, session.state == .waitingApproval, let p = session.permission {
+                approvalDetail(p)
+            } else if showDetail, session.state == .waitingInput, let q = session.question {
+                questionCard(q)
             } else if isPending {
                 pendingHint
             }
@@ -471,17 +471,24 @@ struct SessionRow: View {
         .onTapGesture { actions.jump(session) }
     }
 
-    /// 詳細カードを広げない待ち行の代わり。内容は出さず、あることだけ伝える
+    /// 詳細カードを広げない待ち行の代わり。内容は出さず、あることだけ伝える。
+    /// 質問はノッチで答えるものではないので、ここでも移動ボタンだけは出しておく
     private var pendingHint: some View {
-        HStack(spacing: 6) {
-            Text(session.state == .waitingApproval ? "承認待ち" : "質問あり")
+        let isQuestion = session.state == .waitingInput
+        return HStack(spacing: 6) {
+            Text(isQuestion ? "💬 質問あり" : "承認待ち")
                 .font(.system(size: 10, weight: .semibold))
                 .foregroundColor(Color(nsColor: .systemBlue))
-            Text("— 先の1件に回答すると内容が出ます（行をクリックで画面へ）")
+            Text(isQuestion
+                 ? "— 回答はAIの画面で行います"
+                 : "— 先の1件に回答すると内容が出ます（行をクリックで画面へ）")
                 .font(.system(size: 10))
                 .foregroundColor(.white.opacity(0.45))
                 .lineLimit(1)
             Spacer()
+            if isQuestion {
+                answerQuestionButton(compact: true)
+            }
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 4)
@@ -600,54 +607,69 @@ struct SessionRow: View {
         .buttonStyle(.plain)
     }
 
+    /// AIからの質問（AskUserQuestion）。許可要求とは別物なので、承認の選択肢は出さない。
+    /// 回答はそのAIの画面で行う前提で、ノッチは中身と「質問に答える」＝移動ボタンだけを出す
+    /// （選択肢をキー送信で選ぶと、同じアプリで動く別のエージェントに入る恐れがあるため）。
     private func questionCard(_ q: PendingQuestion) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 6) {
-                Text("💬")
-                    .font(.system(size: 11))
-                Text(q.text.isEmpty ? "エージェントからの質問" : q.text)
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundColor(Color(nsColor: .systemBlue))
-                    .lineLimit(2)
+                Text("💬 質問")
+                    .font(.system(size: 10, weight: .bold))
+                    .foregroundColor(.white)
+                    .padding(.horizontal, 7)
+                    .padding(.vertical, 2)
+                    .background(Capsule().fill(Color(nsColor: .systemBlue).opacity(0.75)))
+                Text("AIが答えを待っています")
+                    .font(.system(size: 10))
+                    .foregroundColor(.white.opacity(0.45))
+                Spacer()
             }
-            if q.options.isEmpty {
-                Button(action: { actions.jump(session) }) {
-                    Text("ターミナルで回答する")
-                        .font(.system(size: 12, weight: .medium))
-                        .foregroundColor(.white)
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 6)
-                        .background(RoundedRectangle(cornerRadius: 7).fill(Color.white.opacity(0.12)))
-                }
-                .buttonStyle(.plain)
-            } else {
-                VStack(spacing: 4) {
-                    ForEach(Array(q.options.prefix(4).enumerated()), id: \.offset) { i, opt in
-                        Button(action: { actions.answer(session, i + 1) }) {
-                            HStack(spacing: 8) {
-                                Text("\(i + 1)")
-                                    .font(.system(size: 10, weight: .bold, design: .monospaced))
-                                    .foregroundColor(.white.opacity(0.6))
-                                    .padding(.horizontal, 6)
-                                    .padding(.vertical, 2)
-                                    .background(RoundedRectangle(cornerRadius: 4).fill(Color.white.opacity(0.12)))
-                                Text(opt)
-                                    .font(.system(size: 12))
-                                    .foregroundColor(.white)
-                                    .lineLimit(1)
-                                Spacer()
-                            }
-                            .padding(.horizontal, 8)
-                            .padding(.vertical, 6)
-                            .background(RoundedRectangle(cornerRadius: 7).fill(Color.white.opacity(0.06)))
-                        }
-                        .buttonStyle(.plain)
+            Text(q.text.isEmpty ? "エージェントからの質問" : q.text)
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundColor(.white)
+                .lineLimit(3)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            if !q.options.isEmpty {
+                // 選択肢は読み取り専用（何を聞かれているかが分かればよい）
+                let shown = q.options.prefix(Self.maxQuestionOptions)
+                let rest = q.options.count - shown.count
+                VStack(alignment: .leading, spacing: 2) {
+                    ForEach(Array(shown.enumerated()), id: \.offset) { i, opt in
+                        Text("\(i + 1). \(opt)")
+                            .font(.system(size: 11))
+                            .foregroundColor(.white.opacity(0.55))
+                            .lineLimit(1)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    if rest > 0 {
+                        Text("…他 \(rest) 件")
+                            .font(.system(size: 11))
+                            .foregroundColor(.white.opacity(0.35))
+                            .frame(maxWidth: .infinity, alignment: .leading)
                     }
                 }
+                .padding(8)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(RoundedRectangle(cornerRadius: 6).fill(Color.white.opacity(0.05)))
             }
+            answerQuestionButton(compact: false)
         }
         .padding(10)
-        .background(RoundedRectangle(cornerRadius: 8).fill(Color.blue.opacity(0.06)))
+        .background(RoundedRectangle(cornerRadius: 8).fill(Color.blue.opacity(0.08)))
+    }
+
+    /// 「質問に答える」＝そのAIのウィンドウ（タブ）を前面に出す。回答自体は画面側で行う
+    private func answerQuestionButton(compact: Bool) -> some View {
+        Button(action: { actions.jump(session) }) {
+            Text("質問に答える")
+                .font(.system(size: compact ? 11 : 12, weight: .semibold))
+                .foregroundColor(.black)
+                .frame(maxWidth: compact ? nil : .infinity)
+                .padding(.horizontal, compact ? 10 : 0)
+                .padding(.vertical, compact ? 4 : 7)
+                .background(RoundedRectangle(cornerRadius: 7).fill(Color.white.opacity(0.92)))
+        }
+        .buttonStyle(.plain)
     }
 
     private func diffColor(_ line: String) -> Color {
