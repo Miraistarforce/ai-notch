@@ -22,6 +22,7 @@
 | `Sources/AINotch/FrontWindow.swift` | アクセシビリティAPIでの**前面ウィンドウ特定**（タイトル取得・目的ウィンドウの前面化） |
 | `Sources/AINotch/HookSetup.swift` | AI検出と各設定ファイルへのhook登録・解除（Codexのtrust書き込み含む） |
 | `Sources/AINotch/SettingsView.swift` | 連携設定ウィンドウ（メニューバーのClawdアイコンから開く） |
+| `Sources/AINotch/AppSettings.swift` | アプリ設定の永続化（UserDefaults）。いまは許可の自動化 `skipPermissionRequests` のみ |
 | `Sources/AINotch/LoginItem.swift` | 自動起動＋クラッシュ時の自動復帰（launchd の LaunchAgent を生成・登録。起動引数 `--enable-login-item` / `--disable-login-item` にも対応） |
 | `Sources/AINotch/CrashLog.swift` | 未キャッチ例外の記録（`AINotchApplication.reportException` と `NSSetUncaughtExceptionHandler`）。`~/Library/Logs/AINotch/crash.log` |
 | `Sources/AINotch/SingleInstance.swift` | 二重起動の防止（先に動いていれば exit 0 で黙って終わる） |
@@ -74,6 +75,8 @@ Claude Code hooks形式（`hook_event_name`: SessionStart / UserPromptSubmit / P
 - ユーザーがそのAIの画面を開いたら decision="defer" でhookを解放し、通常のダイアログを出す。
 - **AskUserQuestion にも PermissionRequest が飛ぶ**（2026-08-14に実測。`PreToolUse AskUserQuestion` の約1秒後に `PermissionRequest AskUserQuestion`。`tool_input.questions` は同じ中身）。これは「許可」ではないので**承認カードにしてはいけない**（昔は「はい／はい、今後は確認しない／いいえ」が出て、拒否すると質問ごと消えていた）。さらにhookを掴んだままだと**そのAIの画面に質問UIが出ない**ので、`SessionStore.applyQuestion` で質問として扱ったうえで**即座に defer** して画面側に出させる。ノッチは質問文・選択肢（読み取り専用）と「**質問に答える**」＝ジャンプボタンだけを出す。
 - **質問への回答はノッチからしない**。選択肢の番号をキー送信すると、同じアプリで動く別のエージェントに数字が入る恐れがあるため（承認と同じ事故）。`NotchActions` に answer は無い。
+- **許可の自動化（`AppSettings.skipPermissionRequests`）は PermissionRequest の質問判定より後に置く**。順序が逆になると質問まで自動で「許可」してしまい、人間が読む前に選択肢が勝手に決まる。実装上は質問なら `break` した後にしか自動許可の分岐が来ないようにしてある（`SessionStore.handle` の `case "PermissionRequest"`）。自動許可は決定値 `allow` を書くだけで、hook応答の仕組み（`notch_post.py` の `updatedInput`）は手動と同じ。`allow_always` にはしない（設定ファイルに恒久ルールを書かず、オフにすればすぐ元に戻るようにするため）。
+- 自動許可した行は `acknowledged = true` にして点滅・自動オープンをさせない。何を通したかは `statusText`（「自動で許可: …」）と `GET /events` に残る。Notification由来の許可待ち（hookが待っていないもの）は自動許可できないので、従来どおりカードを出す。
 - **「その画面を見ているか」はウィンドウ単位で判定する**（`SessionStore.isOnScreen`）。Cursor / VS Code は1つのバンドルIDで複数のエージェントが動くため、バンドルIDの一致だけで判定すると**別ウィンドウのエージェントを見ているのに defer してしまい**、ノッチの承認がキー送信にフォールバックして前面の別のClaude Codeに入る（2026-07に実際に発生）。同じアプリで複数セッションが動いているときは、フォーカス中ウィンドウのタイトルにプロジェクト名（cwdの末尾）が含まれるかで判定し、判定できなければ「見ていない」扱いにしてhook経路を保つ。アクセシビリティ未許可のときはキー送信自体できないので従来どおりアプリ単位で判定する。
 - **キー送信は送信先を特定できたときだけ行う**（`TerminalControl.jumpThenKeys`）。iTerm=セッションUUID / Terminal=tty / エディタ=AXでタイトル一致のウィンドウが1つだけ、のいずれかで特定でき、かつ送信直前に対象アプリが前面であることを確認してから送る。特定できない場合は送らず「画面を開いて回答してください」と出す。
 - **Enterでの承認は相手が一意に決まるときだけ**（`SessionStore.enterApprovalTarget`）。承認待ちが1つ＋hook応答で返せる＋今見ているアプリで別のエージェントが動いていない、を全て満たすときのみCGEventTapを張る（常時張ると他のエージェントに打ったEnterを横取りする）。

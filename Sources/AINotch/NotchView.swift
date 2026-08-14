@@ -139,6 +139,8 @@ struct CollapsedBar: View {
 struct ExpandedPanel: View {
     @ObservedObject var store: SessionStore
     @ObservedObject var ui: UIState
+    /// 許可の自動化がオンの間はヘッダーに出す（勝手に許可している状態を隠さない）
+    @ObservedObject var settings = AppSettings.shared
     let actions: NotchActions
 
     /// 一度に出す最大セッション数。ScrollViewを使わない代わりに、
@@ -263,6 +265,14 @@ struct ExpandedPanel: View {
             // 閉じた状態と同じClawdアニメーションをヘッダーに表示
             ClawdWalker(range: 12, mode: store.clawdMode)
                 .frame(width: 52, height: 27, alignment: .bottom)
+            if settings.skipPermissionRequests {
+                Text("自動許可 ON")
+                    .font(.system(size: 10, weight: .bold))
+                    .foregroundColor(Color(nsColor: .systemOrange))
+                    .padding(.horizontal, 7)
+                    .padding(.vertical, 2)
+                    .background(Capsule().fill(Color(nsColor: .systemOrange).opacity(0.16)))
+            }
             Spacer()
             HStack(spacing: 12) {
                 statChip(color: Color(nsColor: .systemTeal), label: "実行中", count: store.workingCount)

@@ -495,6 +495,8 @@ final class NotchWindowController {
             "accessibilityTrusted": FrontWindow.isTrusted(),
             // launchd管理下なら落ちても自動復帰する。falseなら手動起動＝復帰しない
             "supervised": LoginItem.shared.isSupervised,
+            // true ならツール実行の許可をノッチが自動で許可している（質問は対象外）
+            "skipPermissionRequests": AppSettings.shared.skipPermissionRequests,
             "autoLaunchEnabled": LoginItem.shared.isEnabled,
             // AINotchApplication になっていれば、AppKit内で投げられた例外が
             // reportException 経由で crash.log に残る

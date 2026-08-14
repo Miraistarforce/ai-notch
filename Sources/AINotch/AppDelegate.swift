@@ -150,6 +150,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             menu.addItem(info)
             menu.addItem(.separator())
             menu.addItem(NSMenuItem(title: "AI連携の設定を開く…", action: #selector(openSettings), keyEquivalent: ","))
+            let skip = NSMenuItem(
+                title: "許可を自動で出す（質問は必ず自分で答える）",
+                action: #selector(toggleSkipPermissions),
+                keyEquivalent: ""
+            )
+            skip.state = AppSettings.shared.skipPermissionRequests ? .on : .off
+            menu.addItem(skip)
             let login = NSMenuItem(title: "ログイン時に自動起動", action: #selector(toggleLaunchAtLogin), keyEquivalent: "")
             login.state = LoginItem.shared.isEnabled ? .on : .off
             login.isEnabled = LoginItem.shared.isAvailable
@@ -170,6 +177,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func openSettings() {
         settingsController.open()
+    }
+
+    /// メニューからの許可の自動化オン/オフ。オンにするときだけ内容を確認する
+    /// （以後ツールの許可を人に聞かなくなるので、黙って切り替わらないようにする）。
+    @objc private func toggleSkipPermissions() {
+        let settings = AppSettings.shared
+        if settings.skipPermissionRequests {
+            settings.skipPermissionRequests = false
+            return
+        }
+        let alert = NSAlert()
+        alert.messageText = "ツール実行の許可を自動で出しますか？"
+        alert.informativeText = """
+        オンの間、AIからの許可要求（ファイル編集・コマンド実行など）はノッチが自動で許可します。確認は出ません。
+        AIからの質問は自動で答えないので、これまでどおり自分で読んで回答します。
+        """
+        alert.addButton(withTitle: "自動で許可する")
+        alert.addButton(withTitle: "キャンセル")
+        NSApp.activate(ignoringOtherApps: true)
+        if alert.runModal() == .alertFirstButtonReturn {
+            settings.skipPermissionRequests = true
+        }
     }
 
     /// メニューからの自動起動オン/オフ。失敗（macOSの承認待ち等）は理由をアラートで出す。

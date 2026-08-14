@@ -12,9 +12,18 @@ final class SettingsModel: ObservableObject {
     @Published var launchAtLoginNeedsReregister = false
     @Published var launchAtLoginMessage: String?
 
+    // 許可の自動化（Permission Request Skip）
+    @Published var skipPermissions = AppSettings.shared.skipPermissionRequests
+
     func refresh() {
         tools = HookSetup.shared.tools()
+        skipPermissions = AppSettings.shared.skipPermissionRequests
         refreshLoginItem()
+    }
+
+    func setSkipPermissions(_ on: Bool) {
+        AppSettings.shared.skipPermissionRequests = on
+        skipPermissions = on
     }
 
     func toggle(_ id: String, _ on: Bool) {
@@ -84,6 +93,11 @@ struct SettingsView: View {
 
             Divider()
 
+            // 許可の自動化
+            skipPermissionsRow
+
+            Divider()
+
             // 起動設定
             launchAtLoginRow
 
@@ -108,6 +122,52 @@ struct SettingsView: View {
             .padding(.vertical, 12)
         }
         .frame(width: 400)
+    }
+
+    /// 許可の自動化トグル（Permission Request Skip）。
+    /// オンの間はツール実行の許可をノッチが自動で許可する。質問は対象外で必ず人間が答える。
+    private var skipPermissionsRow: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 12) {
+                VStack(alignment: .leading, spacing: 3) {
+                    HStack(spacing: 6) {
+                        Text("許可を自動で出す")
+                            .font(.system(size: 13, weight: .semibold))
+                        Text("Permission Request Skip")
+                            .font(.system(size: 10, design: .monospaced))
+                            .foregroundStyle(.tertiary)
+                        if model.skipPermissions {
+                            Text("オン")
+                                .font(.system(size: 9.5, weight: .medium))
+                                .padding(.horizontal, 5)
+                                .padding(.vertical, 1.5)
+                                .background(Capsule().fill(Color.orange.opacity(0.18)))
+                                .foregroundStyle(.orange)
+                        }
+                    }
+                    Text("オンの間、ツール実行の許可はノッチが自動で許可します（確認は出ません）。AIからの質問は自動で答えないので、必ず人間が読んで回答します。")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer()
+                Toggle("", isOn: Binding(
+                    get: { model.skipPermissions },
+                    set: { model.setSkipPermissions($0) }
+                ))
+                .toggleStyle(.switch)
+                .labelsHidden()
+            }
+
+            if model.skipPermissions {
+                Text("ファイルの削除やコマンド実行も含めて、すべての許可要求をそのまま許可します。オフにすると全部の許可を自分で出す状態に戻ります。")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
     }
 
     /// ログイン時の自動起動トグル。Macを再起動してもノッチが出るようにする。

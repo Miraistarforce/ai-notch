@@ -445,6 +445,22 @@ final class SessionStore: ObservableObject {
                 break
             }
             let detail = toolDetail(tool, input)
+            s.promptId = str(dict["prompt_id"])
+            // 許可の自動化（Permission Request Skip）がオンなら、ここで即座に許可を返す。
+            // 対象は「ツール実行の許可」だけ。質問は上で処理済みなので、この行より下には来ない
+            // ＝自動で答えることは絶対にない（必ず人間が読む）。
+            if AppSettings.shared.skipPermissionRequests {
+                decisions[decisionKey(sid, s.promptId)] = HookDecision(sessionId: sid, value: "allow")
+                s.state = .working
+                s.permission = nil
+                s.lastTool = detail
+                s.statusText = "自動で許可: \(detail.summary)"
+                // 点滅も自動オープンもさせない（勝手に許可したものでノッチを開かない）
+                s.acknowledged = true
+                s.hookControlled = true
+                s.awaitingHookDecision = false
+                break
+            }
             s.state = .waitingApproval
             s.permission = detail
             s.lastTool = detail
@@ -452,7 +468,6 @@ final class SessionStore: ObservableObject {
             s.acknowledged = false
             s.hookControlled = true
             s.awaitingHookDecision = true
-            s.promptId = str(dict["prompt_id"])
             decisions.removeValue(forKey: decisionKey(sid, s.promptId))
             // 「そのセッションの画面を見ているか」はウィンドウ単位で確かめる。
             // ここを取り違えると、hookを解放したうえでノッチのボタンがキー送信に
