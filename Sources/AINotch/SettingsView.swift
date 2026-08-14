@@ -6,10 +6,10 @@ final class SettingsModel: ObservableObject {
     @Published var tools: [AITool] = []
     @Published var errorMessage: String?
 
-    // 自動起動（ログイン項目）
+    // 自動起動（LaunchAgent）
     @Published var launchAtLogin = false
     @Published var launchAtLoginAvailable = true
-    @Published var launchAtLoginNeedsApproval = false
+    @Published var launchAtLoginNeedsReregister = false
     @Published var launchAtLoginMessage: String?
 
     func refresh() {
@@ -31,8 +31,8 @@ final class SettingsModel: ObservableObject {
         let item = LoginItem.shared
         launchAtLogin = item.isEnabled
         launchAtLoginAvailable = item.isAvailable
-        launchAtLoginNeedsApproval = item.needsApproval
-        if !item.needsApproval { launchAtLoginMessage = nil }
+        launchAtLoginNeedsReregister = item.needsReregister
+        if !item.needsReregister { launchAtLoginMessage = nil }
     }
 
     func setLaunchAtLogin(_ on: Bool) {
@@ -127,7 +127,7 @@ struct SettingsView: View {
                                 .foregroundStyle(.green)
                         }
                     }
-                    Text("Macを再起動・シャットダウンしても、ログインすると自動で立ち上がります")
+                    Text("ログインすると自動で立ち上がり、万一クラッシュしても自動で復帰します")
                         .font(.system(size: 11))
                         .foregroundStyle(.secondary)
                     Text(LoginItem.shared.bundlePath)
@@ -152,7 +152,11 @@ struct SettingsView: View {
                     .foregroundStyle(.orange)
                     .fixedSize(horizontal: false, vertical: true)
             }
-            if model.launchAtLoginNeedsApproval {
+            if model.launchAtLoginNeedsReregister {
+                Text("登録されているパスが、いま動いているアプリと違います。オフ→オンで登録し直してください。")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
                 Button("システム設定のログイン項目を開く") {
                     LoginItem.shared.openSystemSettings()
                 }

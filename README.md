@@ -41,17 +41,23 @@ CLI派向けに `make install-hooks`（Claude Codeのみ登録）も残してあ
 
 動作確認はClawdアイコン右クリック → 「テストイベントを表示」。
 
-### ログイン時に自動起動
+### 自動起動と自動復帰
 
-設定画面の「**ログイン時に自動起動**」をオンにする（メニューバーのClawdアイコン右クリックからも切り替えられる）。オンにするとmacOSのログイン項目に登録され、再起動・シャットダウンしてもログイン時に自動で立ち上がる。
+設定画面の「**ログイン時に自動起動**」をオンにする（メニューバーのClawdアイコン右クリックからも切り替えられる）。オンにすると launchd の LaunchAgent として登録され、ログイン時に自動で立ち上がるうえ、**万一クラッシュしても1秒ほどで自動的に復帰する**。
 
-- 登録されるのは**そのとき動いている `.app` バンドルのパス**。バンドルを別の場所へ移したらオフ→オンし直す。
-- 状態の正はmacOS側（システム設定 → 一般 → ログイン項目）。そちらでオフにすると設定画面もオフになる。
+常駐アプリなので、落ちても画面には何も出ず黙って消える。復帰の仕組みがないと、気づかないまま何日も止まったままになる（実際に起きた）。そのためログイン項目ではなく launchd に任せている。
+
+- 復帰するのは**異常終了したときだけ**。メニューの「AI Notch を終了」で終わらせた場合は生き返らない。
+- 登録されるのは**そのとき動いている `.app` バンドルのパス**。バンドルを別の場所へ移したらオフ→オンし直す（設定画面が警告を出す）。
+- 状態確認は `make agent-status`、または `curl http://127.0.0.1:43110/debug` の `supervised`（true なら自動復帰する状態）。
 - GUIを触らずに切り替えたいときは起動引数で指定できる。
 
 ```bash
-open dist/AINotch.app --args --enable-login-item    # オン
+make install-agent                                  # 自動起動＋自動復帰を有効にして起動し直す
+open dist/AINotch.app --args --enable-login-item    # オン（反映は次のログインから）
 open dist/AINotch.app --args --disable-login-item   # オフ
+make restart                                        # いま反映させたいとき
+make uninstall-agent                                # 解除
 ```
 
 ## 各エージェントとの連携方法
@@ -115,7 +121,15 @@ notch-run / report ─┘                                          │
 ```bash
 curl http://127.0.0.1:43110/health    # 死活確認
 curl http://127.0.0.1:43110/sessions  # 現在のセッション一覧
-curl http://127.0.0.1:43110/debug     # パネル位置・画面情報
+curl http://127.0.0.1:43110/debug     # パネル位置・画面情報・常駐状態
+```
+
+ノッチが反応しなくなったときは、まずログを見る。
+
+```bash
+make agent-status                     # launchdの登録・稼働状況
+cat ~/Library/Logs/AINotch/crash.log  # 未キャッチ例外（理由とスタック）
+tail ~/Library/Logs/AINotch/launchd.err.log
 ```
 
 ## 制限事項

@@ -20,6 +20,10 @@ final class EventServer {
     var decisionProvider: ((String) -> String)?
     /// 外部からの決定の書き込み（テスト・自動化用）
     var decisionSetter: ((String, String) -> Void)?
+    /// listenerの状態変化。NWListener.start は失敗しても例外を投げず、
+    /// ポートが塞がっている等の失敗はすべてここに来る。見ていないと
+    /// 「アプリは生きているのにイベントを受け取れない」状態に黙って入る。
+    var onStateChange: ((NWListener.State) -> Void)?
 
     init(port: UInt16) throws {
         let params = NWParameters.tcp
@@ -32,6 +36,9 @@ final class EventServer {
     }
 
     func start() {
+        listener.stateUpdateHandler = { [weak self] state in
+            self?.onStateChange?(state)
+        }
         listener.newConnectionHandler = { [weak self] conn in
             guard let self else { return }
             conn.start(queue: self.queue)

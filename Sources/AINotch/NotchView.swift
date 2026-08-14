@@ -16,7 +16,19 @@ struct NotchRootView: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-        .onHover { actions.hover($0) }
+        // ホバーは「枠のどこかにカーソルがある」ことだけを枠全体で受け取り、
+        // 実際に描かれている範囲にいるかは NotchWindowController.hoverChanged が
+        // 座標で判定する。中身側に .onHover を付けると展開アニメーションの
+        // 拡大縮小でホバーが外れ、乗せているのに閉じる／開閉がばたつく。
+        // 位置が要るので onHover ではなく onContinuousHover を使う
+        // （移動のたびに発火するので、余白から中身へ入った瞬間を拾える）。
+        .onContinuousHover { phase in
+            switch phase {
+            case .active: actions.hover(true)
+            case .ended: actions.hover(false)
+            @unknown default: actions.hover(false)
+            }
+        }
         .animation(.spring(response: 0.34, dampingFraction: 0.82), value: ui.expanded)
     }
 }
@@ -79,23 +91,27 @@ struct CollapsedBar: View {
 
                 Spacer(minLength: ui.notchWidth)
 
-                // 右側：状態ドット＋サマリーテキスト
-                HStack(spacing: 6) {
-                    HStack(spacing: 4) {
-                        if store.activeSessions.isEmpty {
-                            Circle().fill(Color.gray.opacity(0.6)).frame(width: 6, height: 6)
-                        } else {
-                            ForEach(store.activeSessions.prefix(4)) { s in
-                                let blinkColor = s.blinkColor
-                                Circle()
-                                    .fill(Color(nsColor: blinkColor ?? s.stateColor))
-                                    .frame(width: 6, height: 6)
-                                    .opacity(blinkColor != nil && !phase ? 0.25 : 1.0)
-                            }
+                // 右側：状態ドットのみ（メニューバーを隠す幅を抑えるためテキストは出さない。
+                // 件数と内訳は展開パネル側で見る）
+                HStack(spacing: 4) {
+                    if store.activeSessions.isEmpty {
+                        Circle().fill(Color.gray.opacity(0.6)).frame(width: 6, height: 6)
+                    } else {
+                        ForEach(store.activeSessions.prefix(4)) { s in
+                            let blinkColor = s.blinkColor
+                            Circle()
+                                .fill(Color(nsColor: blinkColor ?? s.stateColor))
+                                .frame(width: 6, height: 6)
+                                .opacity(blinkColor != nil && !phase ? 0.25 : 1.0)
+                        }
+                        // 4件を超える分は数で示す（黙って隠さない）
+                        let hidden = store.activeSessions.count - 4
+                        if hidden > 0 {
+                            Text("+\(hidden)")
+                                .font(.system(size: 9, weight: .semibold))
+                                .foregroundColor(.white.opacity(0.6))
                         }
                     }
-                    summary(phase: phase)
-                        .font(.system(size: 11, weight: .medium))
                 }
                 .frame(width: NotchWindowController.sideWidth)
             }
@@ -116,28 +132,6 @@ struct CollapsedBar: View {
             )
         }
     }
-
-    @ViewBuilder
-    private func summary(phase: Bool) -> some View {
-        if store.errorCount > 0 {
-            Text("エラー \(store.errorCount)")
-                .foregroundColor(.red)
-                .opacity(phase ? 1.0 : 0.4)
-        } else if store.pendingCount > 0 {
-            Text("承認待ち \(store.pendingCount)")
-                .foregroundColor(Color(nsColor: .systemBlue))
-                .opacity(phase ? 1.0 : 0.4)
-        } else if store.workingCount > 0 {
-            Text("実行中 \(store.workingCount)")
-                .foregroundColor(Color(nsColor: .systemTeal))
-        } else if store.doneCount > 0 {
-            Text("完了 \(store.doneCount)")
-                .foregroundColor(.green)
-        } else {
-            Text("待機")
-                .foregroundColor(.gray)
-        }
-    }
 }
 
 // MARK: - 展開パネル
@@ -146,6 +140,11 @@ struct ExpandedPanel: View {
     @ObservedObject var store: SessionStore
     @ObservedObject var ui: UIState
     let actions: NotchActions
+
+    /// 一度に出す最大セッション数。ScrollViewを使わない代わりに、
+    /// ウィンドウ枠（NotchWindowController.expandedHeight）に収まる数で頭打ちにする。
+    /// セッションは対応が必要なものが先に来るよう並んでいるので、あふれるのは優先度の低い行。
+    static let maxVisibleSessions = 4
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -165,43 +164,79 @@ struct ExpandedPanel: View {
                     let phase = Int(ctx.date.timeIntervalSinceReferenceDate / 1.4) % 2 == 0
                     // Enterで承認できるのは対象が一意に決まるときだけ。その行にだけ「Enter」と出す
                     let enterTargetId = store.enterApprovalTarget?.id
-                    ScrollView {
-                        VStack(spacing: 6) {
-                            ForEach(folderGroups(store.sessions)) { group in
-                                // 1秒長押しでフォルダ単位の休止⇔再開を切り替え
-                                if store.mutedFolders.contains(group.id) {
-                                    MutedFolderTab(group: group) {
-                                        store.toggleMutedFolder(group.id)
-                                    }
-                                } else if group.sessions.count > 1 {
-                                    GroupCard(group: group, actions: actions, blinkPhase: phase, enterTargetId: enterTargetId)
-                                        .onLongPressGesture(minimumDuration: 1.0) {
-                                            store.toggleMutedFolder(group.id)
-                                        }
-                                } else if let s = group.sessions.first {
-                                    SessionRow(
-                                        session: s,
-                                        actions: actions,
-                                        inGroup: false,
-                                        blinkPhase: phase,
-                                        enterTargetId: enterTargetId
-                                    )
-                                    .onLongPressGesture(minimumDuration: 1.0) {
-                                        store.toggleMutedFolder(group.id)
-                                    }
+                    // ここにScrollViewを置いてはいけない。SwiftUIのScrollViewは
+                    // 「与えられた高さいっぱいに広がる」ビューなので、下の fixedSize
+                    // （＝中身の理想の高さを教えて）と組み合わせると、ウィンドウの
+                    // レイアウト中にScrollViewがリサイズされ、その通知でSwiftUIが
+                    // レイアウト中のウィンドウへ再度レイアウトを要求し、AppKitが例外を
+                    // 投げてプロセスごと落ちる（2026-08-09に実際に発生）。
+                    // 表示件数と差分行数を絞って、スクロール自体を要らなくしてある。
+                    let visible = store.sessions.prefix(Self.maxVisibleSessions)
+                    let hiddenCount = store.sessions.count - visible.count
+                    // 承認・質問の詳細カードは一度に1件だけ広げる。全部広げると
+                    // パネルが画面を覆ってしまい、枠の上限で下が切れる。
+                    let detailId = visible.first {
+                        $0.state == .waitingApproval || $0.state == .waitingInput
+                    }?.id
+                    VStack(spacing: 6) {
+                        ForEach(folderGroups(Array(visible))) { group in
+                            // 1秒長押しでフォルダ単位の休止⇔再開を切り替え
+                            if store.mutedFolders.contains(group.id) {
+                                MutedFolderTab(group: group) {
+                                    store.toggleMutedFolder(group.id)
+                                }
+                            } else if group.sessions.count > 1 {
+                                GroupCard(
+                                    group: group,
+                                    actions: actions,
+                                    blinkPhase: phase,
+                                    enterTargetId: enterTargetId,
+                                    detailId: detailId
+                                )
+                                .onLongPressGesture(minimumDuration: 1.0) {
+                                    store.toggleMutedFolder(group.id)
+                                }
+                            } else if let s = group.sessions.first {
+                                SessionRow(
+                                    session: s,
+                                    actions: actions,
+                                    inGroup: false,
+                                    blinkPhase: phase,
+                                    enterTargetId: enterTargetId,
+                                    showDetail: s.id == detailId
+                                )
+                                .onLongPressGesture(minimumDuration: 1.0) {
+                                    store.toggleMutedFolder(group.id)
                                 }
                             }
                         }
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 8)
+                        // 入りきらない分は黙って隠さず件数で示す（折りたたみバーと同じ方針）
+                        if hiddenCount > 0 {
+                            Text("他 \(hiddenCount) 件（対応が必要なものから順に表示しています）")
+                                .font(.system(size: 10))
+                                .foregroundColor(.white.opacity(0.4))
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(.horizontal, 6)
+                                .padding(.top, 2)
+                        }
                     }
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 8)
                 }
             }
 
             Spacer(minLength: 10)
         }
         .frame(width: NotchWindowController.expandedWidth)
-        .frame(maxHeight: NotchWindowController.expandedHeight, alignment: .top)
+        // 枠で頭打ちにする前の高さ。ここが maxPanelHeight を超えていたら中身が切れている
+        .background(
+            GeometryReader { geo in
+                Color.clear
+                    .onAppear { ui.naturalContentHeight = geo.size.height }
+                    .onChange(of: geo.size.height) { _, h in ui.naturalContentHeight = h }
+            }
+        )
+        .frame(maxHeight: ui.maxPanelHeight, alignment: .top)
         .fixedSize(horizontal: false, vertical: true)
         .background(
             UnevenRoundedRectangle(
@@ -299,6 +334,8 @@ struct GroupCard: View {
     let actions: NotchActions
     let blinkPhase: Bool
     var enterTargetId: String?
+    /// 詳細カードを広げてよい唯一のセッションID
+    var detailId: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
@@ -324,7 +361,8 @@ struct GroupCard: View {
                         actions: actions,
                         inGroup: true,
                         blinkPhase: blinkPhase,
-                        enterTargetId: enterTargetId
+                        enterTargetId: enterTargetId,
+                        showDetail: s.id == detailId
                     )
                 }
             }
@@ -350,20 +388,33 @@ struct SessionRow: View {
     var blinkPhase = true
     /// Enterで承認できるセッションのID（この行が対象なら「はい（Enter）」と表示する）
     var enterTargetId: String?
+    /// 承認・質問の詳細カードを広げるか。パネルが画面を覆わないよう、
+    /// 広げるのは一度に1件だけ（2件目以降は存在だけ示す）
+    var showDetail = true
     @State private var hovering = false
+
+    /// 承認カードに出す差分の最大行数。残りは「…他N行」で示す
+    static let maxDiffLines = 6
+
+    private var isPending: Bool {
+        session.state == .waitingApproval || session.state == .waitingInput
+    }
 
     var body: some View {
         let blinkColor = session.blinkColor
         VStack(alignment: .leading, spacing: 8) {
             headerRow(blinkColor: blinkColor)
 
-            // 承認待ちは最初から内容と承認ボタンを展開表示する
-            if session.state == .waitingApproval, let p = session.permission {
-                approvalDetail(p)
-            }
-
-            if let q = session.question, session.state == .waitingInput {
-                questionCard(q)
+            if showDetail {
+                // 承認待ちは最初から内容と承認ボタンを展開表示する
+                if session.state == .waitingApproval, let p = session.permission {
+                    approvalDetail(p)
+                }
+                if let q = session.question, session.state == .waitingInput {
+                    questionCard(q)
+                }
+            } else if isPending {
+                pendingHint
             }
         }
         .padding(.horizontal, 10)
@@ -420,6 +471,23 @@ struct SessionRow: View {
         .onTapGesture { actions.jump(session) }
     }
 
+    /// 詳細カードを広げない待ち行の代わり。内容は出さず、あることだけ伝える
+    private var pendingHint: some View {
+        HStack(spacing: 6) {
+            Text(session.state == .waitingApproval ? "承認待ち" : "質問あり")
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundColor(Color(nsColor: .systemBlue))
+            Text("— 先の1件に回答すると内容が出ます（行をクリックで画面へ）")
+                .font(.system(size: 10))
+                .foregroundColor(.white.opacity(0.45))
+                .lineLimit(1)
+            Spacer()
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 4)
+        .background(RoundedRectangle(cornerRadius: 6).fill(Color.blue.opacity(0.07)))
+    }
+
     private func rowBackground(blinkColor: NSColor?) -> some View {
         RoundedRectangle(cornerRadius: 10)
             .fill(
@@ -450,17 +518,26 @@ struct SessionRow: View {
                 Spacer()
             }
             if !p.lines.isEmpty {
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 2) {
-                        ForEach(Array(p.lines.enumerated()), id: \.offset) { _, line in
-                            Text(line)
-                                .font(.system(size: 10, design: .monospaced))
-                                .foregroundColor(diffColor(line))
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                        }
+                // ここもScrollViewは使わない（展開パネル側と同じクラッシュ経路に乗るため）。
+                // ノッチは1.5秒で自動的に閉じる一覧なので、そもそもスクロールできない。
+                // 全文はジャンプ先の画面で見る前提で、先頭数行だけ出して残りは件数で示す。
+                let shown = p.lines.prefix(Self.maxDiffLines)
+                let rest = p.lines.count - shown.count
+                VStack(alignment: .leading, spacing: 2) {
+                    ForEach(Array(shown.enumerated()), id: \.offset) { _, line in
+                        Text(line)
+                            .font(.system(size: 10, design: .monospaced))
+                            .foregroundColor(diffColor(line))
+                            .lineLimit(1)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    if rest > 0 {
+                        Text("…他 \(rest) 行")
+                            .font(.system(size: 10, design: .monospaced))
+                            .foregroundColor(.white.opacity(0.4))
+                            .frame(maxWidth: .infinity, alignment: .leading)
                     }
                 }
-                .frame(maxHeight: 150)
                 .padding(8)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .background(RoundedRectangle(cornerRadius: 6).fill(Color.white.opacity(0.05)))

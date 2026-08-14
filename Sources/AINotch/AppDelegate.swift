@@ -87,11 +87,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 }
                 return data
             }
+            // 待受開始のログは .ready を受け取ってから出す（startした時点では未確定）
+            server.onStateChange = { [weak self] state in
+                guard let self else { return }
+                switch state {
+                case .ready:
+                    NSLog("AINotch: 127.0.0.1:\(self.port) で待受開始")
+                case .waiting(let error):
+                    CrashLog.note("サーバーが待機状態のままです（ポート\(self.port)）: \(error)")
+                case .failed(let error):
+                    CrashLog.note("サーバーが停止しました（ポート\(self.port)）: \(error)")
+                default:
+                    break
+                }
+            }
             server.start()
             self.server = server
-            NSLog("AINotch: 127.0.0.1:\(port) で待受開始")
         } catch {
-            NSLog("AINotch: サーバー起動失敗 \(error)")
+            // ここで終了はしない（黙って消えるのが今回直した問題そのもの）。
+            // 理由をログに残し、メニューバーからは操作できる状態を保つ。
+            CrashLog.note("サーバーを起動できませんでした（ポート\(port)）: \(error)")
         }
 
         setupStatusItem()
@@ -101,6 +116,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             object: nil, queue: .main
         ) { [weak self] _ in
             self?.windowController.reposition()
+        }
+
+        // 診断用：わざと落として「crash.logに理由が残るか」「launchdが復帰させるか」を確かめる。
+        // `open dist/AINotch.app --args --selftest-exception` で実行する。
+        if CommandLine.arguments.contains("--selftest-exception") {
+            Timer.scheduledTimer(withTimeInterval: 1.5, repeats: false) { _ in
+                NSException(
+                    name: .internalInconsistencyException,
+                    reason: "AI Notch セルフテスト：意図的に投げた例外です",
+                    userInfo: ["selftest": true]
+                ).raise()
+            }
         }
     }
 
@@ -156,7 +183,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             alert.messageText = "自動起動を設定できませんでした"
             alert.informativeText = error.localizedDescription
             alert.addButton(withTitle: "OK")
-            if item.needsApproval { alert.addButton(withTitle: "ログイン項目を開く") }
+            alert.addButton(withTitle: "ログイン項目を開く")
             NSApp.activate(ignoringOtherApps: true)
             if alert.runModal() == .alertSecondButtonReturn { item.openSystemSettings() }
         }

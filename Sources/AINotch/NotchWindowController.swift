@@ -6,8 +6,14 @@ final class UIState: ObservableObject {
     @Published var hovering = false
     @Published var notchWidth: CGFloat = 190
     @Published var barHeight: CGFloat = 34
+    /// 展開パネルが伸びられる上限。画面が低いMac（13インチのAir等）でも
+    /// はみ出さないよう、実際の画面高さに合わせて applyFrame が縮める
+    @Published var maxPanelHeight: CGFloat = NotchWindowController.expandedHeight
     /// 展開パネルの実際の描画高さ（クリック透過の判定用。再描画不要なので非Published）
     var panelContentHeight: CGFloat = 0
+    /// 枠で頭打ちにする前の、中身が本来必要としている高さ。
+    /// panelContentHeight とほぼ同じなら収まっている。これより枠が小さいと下が切れる。
+    var naturalContentHeight: CGFloat = 0
 }
 
 /// 承認カード表示中だけ有効になるグローバルEnterキー監視（CGEventTap）。
@@ -62,12 +68,15 @@ private final class ApprovalKeyMonitor {
 /// 見えているコンテンツの外側（ウィンドウ枠内の透明部分）へのクリックを
 /// 下のウィンドウに通すホスティングビュー
 private final class PassthroughHostingView: NSHostingView<NotchRootView> {
-    var interactiveHeight: () -> CGFloat = { 0 }
+    /// いま実際に描かれている中身の大きさ（ウィンドウ上端・左右中央にそろえて描かれる）
+    var interactiveSize: () -> CGSize = { .zero }
 
     override func hitTest(_ point: NSPoint) -> NSView? {
         let p = convert(point, from: superview)
+        let size = interactiveSize()
         let fromTop = isFlipped ? p.y : bounds.height - p.y
-        guard fromTop <= interactiveHeight() else { return nil }
+        guard fromTop >= 0, fromTop <= size.height,
+              abs(p.x - bounds.midX) <= size.width / 2 else { return nil }
         return super.hitTest(point)
     }
 }
@@ -110,8 +119,14 @@ final class NotchWindowController {
     private let keyMonitor = ApprovalKeyMonitor()
 
     static let expandedWidth: CGFloat = 680
-    static let expandedHeight: CGFloat = 520
-    static let sideWidth: CGFloat = 130
+    /// 展開ウィンドウの高さ。パネルはScrollViewを持たず中身の分だけ伸びるので、
+    /// 表示上限（詳細カード1枚＋残り4行＋あふれ表示）が収まる高さを枠として確保する。
+    /// ここが中身より小さいと下が切れるうえ、contentRect が枠と一致して
+    /// 透明な余白まで当たり判定に入ってしまうので、必ず余裕を持たせること。
+    static let expandedHeight: CGFloat = 780
+    /// 物理ノッチの左右に張り出す幅。ここはメニューバーの実在領域を覆うので、
+    /// 隠す範囲が最小になるようClawdと状態ドットが収まるぎりぎりに留める。
+    static let sideWidth: CGFloat = 70
 
     init(store: SessionStore) {
         self.store = store
@@ -163,14 +178,7 @@ final class NotchWindowController {
         )
         let root = NotchRootView(store: store, ui: ui, actions: actions)
         let host = PassthroughHostingView(rootView: root)
-        host.interactiveHeight = { [weak self] in
-            guard let self else { return 0 }
-            if self.ui.expanded {
-                let h = self.ui.panelContentHeight
-                return h > 0 ? h : Self.expandedHeight
-            }
-            return self.ui.barHeight
-        }
+        host.interactiveSize = { [weak self] in self?.contentSize() ?? .zero }
         panel.contentView = host
 
         // ノッチの外側をクリックしたら閉じる（他アプリへのクリックはグローバルモニターで拾う）
@@ -247,12 +255,15 @@ final class NotchWindowController {
             notchWidth = screen.frame.width - left.width - right.width
         }
         let barHeight = screen.safeAreaInsets.top > 0 ? screen.safeAreaInsets.top : 36
+        // 画面が低いMac（13インチのAir等）では枠が画面からはみ出すので、そこで頭打ちにする
+        let panelHeight = min(Self.expandedHeight, screen.frame.height - 40)
         // 同じ値の再代入でも @Published は通知するため、画面移動や開閉時の不要な再描画を避ける。
         if ui.notchWidth != notchWidth { ui.notchWidth = notchWidth }
         if ui.barHeight != barHeight { ui.barHeight = barHeight }
+        if ui.maxPanelHeight != panelHeight { ui.maxPanelHeight = panelHeight }
 
         let size: CGSize = expanded
-            ? CGSize(width: max(Self.expandedWidth, notchWidth + 2 * Self.sideWidth), height: Self.expandedHeight)
+            ? CGSize(width: max(Self.expandedWidth, notchWidth + 2 * Self.sideWidth), height: panelHeight)
             : CGSize(width: notchWidth + 2 * Self.sideWidth, height: barHeight)
         let f = screen.frame
         let rect = NSRect(
@@ -280,7 +291,17 @@ final class NotchWindowController {
         updateKeyCapture()
     }
 
-    private func hoverChanged(_ inside: Bool) {
+    /// ウィンドウ枠は描画内容より大きい（展開枠は 680x520 固定だが中身は必要な高さだけ。
+    /// 閉じた直後も縮むアニメーションのため0.36秒は枠が大きいまま残る）。
+    /// 枠内というだけでホバー扱いにすると、ノッチに被っていない位置にカーソルを
+    /// 戻しただけで勝手に展開するので、実際に描かれている範囲かどうかで判定する。
+    private func hoverChanged(_ insideWindow: Bool) {
+        // ゴースト中（半透明＋クリック透過）はホバーを受け付けない。
+        // 復帰はバーから離れたことを ghostTick が見て exitGhost で行う。
+        guard !ghosted else { return }
+        let inside = insideWindow && contentRect().contains(NSEvent.mouseLocation)
+        // onContinuousHover は移動のたびに発火するので、変化したときだけ処理する
+        guard ui.hovering != inside else { return }
         ui.hovering = inside
         if inside {
             collapseWork?.cancel()
@@ -293,6 +314,30 @@ final class NotchWindowController {
     }
 
     // MARK: - ゴースト化（半透明＋クリック透過）
+
+    /// いま実際に描かれている中身の大きさ。ウィンドウ枠は閉じたあとも
+    /// 0.36秒は展開サイズのまま残る（縮むアニメーションのため）ので、
+    /// 当たり判定は枠ではなく必ずこの大きさで行う。
+    private func contentSize() -> CGSize {
+        if ui.expanded {
+            let h = ui.panelContentHeight
+            return CGSize(width: Self.expandedWidth, height: h > 0 ? h : ui.maxPanelHeight)
+        }
+        return CGSize(width: ui.notchWidth + 2 * Self.sideWidth, height: ui.barHeight)
+    }
+
+    /// 実際に描かれている範囲のスクリーン座標（ウィンドウ上端・左右中央にそろえて描かれる）
+    private func contentRect() -> NSRect {
+        let size = contentSize()
+        let f = panel.frame
+        let width = min(size.width, f.width)
+        return NSRect(
+            x: (f.midX - width / 2).rounded(),
+            y: f.maxY - size.height,
+            width: width,
+            height: size.height
+        )
+    }
 
     /// バー領域（ノッチ上部の帯）の現在のスクリーン座標
     private func barRect() -> NSRect? {
@@ -310,9 +355,15 @@ final class NotchWindowController {
     private func startGhostWatch() {
         guard ghostTimer == nil else { return }
         ghostHoverStart = nil
-        ghostTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
+        // メニューを開いている間やドラッグ中はランループが .eventTracking に移るので、
+        // 既定モードのタイマーだとその間止まる。ゴースト（半透明＋クリック透過）は
+        // このタイマーでしか解除できないため、止まると「消えたまま反応しない」状態に
+        // 見えてしまう。.common に入れてトラッキング中も動かす。
+        let timer = Timer(timeInterval: 0.1, repeats: true) { [weak self] _ in
             self?.ghostTick()
         }
+        RunLoop.main.add(timer, forMode: .common)
+        ghostTimer = timer
     }
 
     private func stopGhostWatch() {
@@ -446,10 +497,24 @@ final class NotchWindowController {
         let info: [String: Any] = [
             // 承認の送信先判定に効く情報（誤送信の切り分け用）
             "accessibilityTrusted": FrontWindow.isTrusted(),
+            // launchd管理下なら落ちても自動復帰する。falseなら手動起動＝復帰しない
+            "supervised": LoginItem.shared.isSupervised,
+            "autoLaunchEnabled": LoginItem.shared.isEnabled,
+            // AINotchApplication になっていれば、AppKit内で投げられた例外が
+            // reportException 経由で crash.log に残る
+            "applicationClass": NSApp?.className ?? "nil",
             "frontBundleId": store.frontContext.bundleId,
             "frontWindowTitle": store.frontContext.windowTitle,
             "enterApprovalTarget": store.enterApprovalTarget?.id ?? "",
             "panelFrame": NSStringFromRect(panel.frame),
+            // ホバー・クリックの当たり判定に使う「実際に描かれている範囲」。
+            // panelFrame より小さいのが正常（差分は透明な余白）
+            "contentRect": NSStringFromRect(contentRect()),
+            // 中身が本来必要な高さ。maxPanelHeight を超えていたら下が切れている＝
+            // 表示件数（ExpandedPanel.maxVisibleSessions）を絞るか枠を広げる
+            "naturalContentHeight": ui.naturalContentHeight,
+            "maxPanelHeight": ui.maxPanelHeight,
+            "contentClipped": ui.naturalContentHeight > ui.maxPanelHeight + 0.5,
             "panelVisible": panel.isVisible,
             "panelAlpha": panel.alphaValue,
             "expanded": ui.expanded,
