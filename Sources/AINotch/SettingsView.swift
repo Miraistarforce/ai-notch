@@ -125,7 +125,8 @@ struct SettingsView: View {
     }
 
     /// 許可の自動化トグル（Permission Request Skip）。
-    /// オンの間はツール実行の許可をノッチが自動で許可する。質問は対象外で必ず人間が答える。
+    /// オンの間はツール実行の許可をノッチが自動で許可する。
+    /// AIからの質問と計画の実行確認は対象外で、必ず人間が答える。
     private var skipPermissionsRow: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 12) {
@@ -145,7 +146,7 @@ struct SettingsView: View {
                                 .foregroundStyle(.orange)
                         }
                     }
-                    Text("オンの間、ツール実行の許可はノッチが自動で許可します（確認は出ません）。AIからの質問は自動で答えないので、必ず人間が読んで回答します。")
+                    Text("オンの間、ツール実行の許可はノッチが自動で許可します（確認は出ません）。AIからの質問と、プランモードの「この計画で進めてよいか」は自動で答えないので、必ず人間が読んで決めます。")
                         .font(.system(size: 11))
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -160,7 +161,7 @@ struct SettingsView: View {
             }
 
             if model.skipPermissions {
-                Text("ファイルの削除やコマンド実行も含めて、すべての許可要求をそのまま許可します。オフにすると全部の許可を自分で出す状態に戻ります。")
+                Text("ファイルの削除やコマンド実行も含めて、ツール実行の許可要求はそのまま許可します（計画の実行確認は除く）。オフにすると全部の許可を自分で出す状態に戻ります。")
                     .font(.system(size: 11))
                     .foregroundStyle(.orange)
                     .fixedSize(horizontal: false, vertical: true)

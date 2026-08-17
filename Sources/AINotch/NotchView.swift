@@ -482,22 +482,25 @@ struct SessionRow: View {
     }
 
     /// 詳細カードを広げない待ち行の代わり。内容は出さず、あることだけ伝える。
-    /// 質問はノッチで答えるものではないので、ここでも移動ボタンだけは出しておく
+    /// 質問・計画はノッチで答えるものではないので、ここでも移動ボタンだけは出しておく
     private var pendingHint: some View {
-        let isQuestion = session.state == .waitingInput
+        let isAnswer = session.state == .waitingInput
+        let isPlan = session.question?.kind == .plan
         return HStack(spacing: 6) {
-            Text(isQuestion ? "💬 質問あり" : "承認待ち")
+            Text(isPlan ? "📋 計画の承認待ち" : (isAnswer ? "💬 質問あり" : "承認待ち"))
                 .font(.system(size: 10, weight: .semibold))
                 .foregroundColor(Color(nsColor: .systemBlue))
-            Text(isQuestion
-                 ? "— 回答はAIの画面で行います"
-                 : "— 先の1件に回答すると内容が出ます（行をクリックで画面へ）")
+            Text(isPlan
+                 ? "— 承認はAIの画面で行います"
+                 : (isAnswer
+                    ? "— 回答はAIの画面で行います"
+                    : "— 先の1件に回答すると内容が出ます（行をクリックで画面へ）"))
                 .font(.system(size: 10))
                 .foregroundColor(.white.opacity(0.45))
                 .lineLimit(1)
             Spacer()
-            if isQuestion {
-                answerQuestionButton(compact: true)
+            if isAnswer {
+                answerQuestionButton(compact: true, isPlan: isPlan)
             }
         }
         .padding(.horizontal, 8)
@@ -617,42 +620,46 @@ struct SessionRow: View {
         .buttonStyle(.plain)
     }
 
-    /// AIからの質問（AskUserQuestion）。許可要求とは別物なので、承認の選択肢は出さない。
-    /// 回答はそのAIの画面で行う前提で、ノッチは中身と「質問に答える」＝移動ボタンだけを出す
-    /// （選択肢をキー送信で選ぶと、同じアプリで動く別のエージェントに入る恐れがあるため）。
+    /// AIからの質問（AskUserQuestion）と計画の実行確認（ExitPlanMode）。
+    /// どちらも許可要求とは別物なので、承認の選択肢は出さない。
+    /// 回答・承認はそのAIの画面で行う前提で、ノッチは中身と移動ボタンだけを出す
+    /// （選択肢をキー送信で選ぶと、同じアプリで動く別のエージェントに入る恐れがあるため。
+    /// 計画は全文がノッチに収まらないので、読まずに承認させないため）。
     private func questionCard(_ q: PendingQuestion) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
+        let isPlan = q.kind == .plan
+        return VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 6) {
-                Text("💬 質問")
+                Text(isPlan ? "📋 計画" : "💬 質問")
                     .font(.system(size: 10, weight: .bold))
                     .foregroundColor(.white)
                     .padding(.horizontal, 7)
                     .padding(.vertical, 2)
                     .background(Capsule().fill(Color(nsColor: .systemBlue).opacity(0.75)))
-                Text("AIが答えを待っています")
+                Text(isPlan ? "AIが実行の承認を待っています" : "AIが答えを待っています")
                     .font(.system(size: 10))
                     .foregroundColor(.white.opacity(0.45))
                 Spacer()
             }
-            Text(q.text.isEmpty ? "エージェントからの質問" : q.text)
+            Text(q.text.isEmpty ? (isPlan ? "計画ができました" : "エージェントからの質問") : q.text)
                 .font(.system(size: 12, weight: .semibold))
                 .foregroundColor(.white)
                 .lineLimit(3)
                 .frame(maxWidth: .infinity, alignment: .leading)
             if !q.options.isEmpty {
-                // 選択肢は読み取り専用（何を聞かれているかが分かればよい）
+                // 選択肢（計画なら本文の先頭数行）は読み取り専用。
+                // 何を聞かれているか・どんな計画かが分かればよい
                 let shown = q.options.prefix(Self.maxQuestionOptions)
                 let rest = q.options.count - shown.count
                 VStack(alignment: .leading, spacing: 2) {
                     ForEach(Array(shown.enumerated()), id: \.offset) { i, opt in
-                        Text("\(i + 1). \(opt)")
+                        Text(isPlan ? "・\(opt)" : "\(i + 1). \(opt)")
                             .font(.system(size: 11))
                             .foregroundColor(.white.opacity(0.55))
                             .lineLimit(1)
                             .frame(maxWidth: .infinity, alignment: .leading)
                     }
                     if rest > 0 {
-                        Text("…他 \(rest) 件")
+                        Text(isPlan ? "…他 \(rest) 行（全文は画面で）" : "…他 \(rest) 件")
                             .font(.system(size: 11))
                             .foregroundColor(.white.opacity(0.35))
                             .frame(maxWidth: .infinity, alignment: .leading)
@@ -662,16 +669,17 @@ struct SessionRow: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .background(RoundedRectangle(cornerRadius: 6).fill(Color.white.opacity(0.05)))
             }
-            answerQuestionButton(compact: false)
+            answerQuestionButton(compact: false, isPlan: isPlan)
         }
         .padding(10)
         .background(RoundedRectangle(cornerRadius: 8).fill(Color.blue.opacity(0.08)))
     }
 
-    /// 「質問に答える」＝そのAIのウィンドウ（タブ）を前面に出す。回答自体は画面側で行う
-    private func answerQuestionButton(compact: Bool) -> some View {
+    /// 「質問に答える」「計画を確認する」＝そのAIのウィンドウ（タブ）を前面に出す。
+    /// 回答・承認自体は画面側で行う
+    private func answerQuestionButton(compact: Bool, isPlan: Bool) -> some View {
         Button(action: { actions.jump(session) }) {
-            Text("質問に答える")
+            Text(isPlan ? "計画を確認する" : "質問に答える")
                 .font(.system(size: compact ? 11 : 12, weight: .semibold))
                 .foregroundColor(.black)
                 .frame(maxWidth: compact ? nil : .infinity)

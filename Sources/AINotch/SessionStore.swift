@@ -16,14 +16,27 @@ struct PermissionRequest {
     var lines: [String]     // diffプレビュー等（-/+付き）
 }
 
+/// AIが人間の回答を待っている中身。質問（AskUserQuestion）と
+/// 計画の実行確認（ExitPlanMode）の2種類あり、どちらもノッチからは答えない。
 struct PendingQuestion {
+    enum Kind {
+        case question   // AskUserQuestion
+        case plan       // ExitPlanMode（計画を読んでから実行してよいか決める）
+    }
+    var kind: Kind = .question
     var text: String
+    /// 質問なら選択肢、計画なら本文の先頭数行。どちらも読み取り専用（押せない）
     var options: [String]
 }
 
 /// 質問（AskUserQuestion）のツール名。許可要求と同じ PermissionRequest hook で
 /// 飛んでくるので、これだけは「許可」ではなく「質問」として扱う。
 private let questionToolName = "AskUserQuestion"
+
+/// 計画の実行確認（ExitPlanMode）のツール名。これも PermissionRequest hook で飛んでくるが、
+/// 「ツールを実行してよいか」ではなく「この計画で進めてよいか」＝人間が計画を読んで決めるもの。
+/// 自動許可の対象にしてはいけないし、ノッチのボタンでも承認させない。
+private let planToolName = "ExitPlanMode"
 
 struct AgentSession: Identifiable {
     let id: String
@@ -400,9 +413,9 @@ final class SessionStore: ObservableObject {
         var s = sessions.first(where: { $0.id == sid }) ?? newSession(id: sid, dict: dict)
         updateEnvironment(&s, dict: dict)
         let now = Date()
-        // 質問は PreToolUse と PermissionRequest の2回飛んでくるので、
-        // 「さっきまで質問待ちだったか」を見て音を鳴らし直さないようにする
-        let wasWaitingQuestion = s.state == .waitingInput && s.question != nil
+        // 質問・計画の確認は PreToolUse と PermissionRequest の2回飛んでくるので、
+        // 「さっきまで回答待ちだったか」を見て音を鳴らし直さないようにする
+        let wasWaitingAnswer = s.state == .waitingInput && s.question != nil
         s.updatedAt = now
 
         // Claude Code hooks経由のセッションは、開いているフォルダ名をタイトルにする
@@ -423,7 +436,9 @@ final class SessionStore: ObservableObject {
             let tool = str(dict["tool_name"])
             let input = dict["tool_input"] as? [String: Any] ?? [:]
             if tool == questionToolName {
-                applyQuestion(&s, input: input, alreadyNotified: wasWaitingQuestion)
+                applyQuestion(&s, input: input, alreadyNotified: wasWaitingAnswer)
+            } else if tool == planToolName {
+                applyPlanReview(&s, input: input, alreadyNotified: wasWaitingAnswer)
             } else {
                 s.state = .working
                 s.lastTool = toolDetail(tool, input)
@@ -440,15 +455,25 @@ final class SessionStore: ObservableObject {
             // ノッチは内容と「質問に答える」（＝その画面へ移動）だけを出す。
             if tool == questionToolName {
                 let promptId = str(dict["prompt_id"])
-                applyQuestion(&s, input: input, alreadyNotified: wasWaitingQuestion)
+                applyQuestion(&s, input: input, alreadyNotified: wasWaitingAnswer)
+                decisions[decisionKey(sid, promptId)] = HookDecision(sessionId: sid, value: "defer")
+                break
+            }
+            // 計画の実行確認（ExitPlanMode）も同じくノッチでは答えない。計画の全文はノッチに
+            // 収まらない（ScrollView禁止・数行まで）ので、読まずに承認する事故を防ぐため
+            // すぐdeferして画面側の確認ダイアログで人間に決めてもらう。
+            // ※この分岐は必ず自動許可（skipPermissionRequests）より前に置くこと。
+            if tool == planToolName {
+                let promptId = str(dict["prompt_id"])
+                applyPlanReview(&s, input: input, alreadyNotified: wasWaitingAnswer)
                 decisions[decisionKey(sid, promptId)] = HookDecision(sessionId: sid, value: "defer")
                 break
             }
             let detail = toolDetail(tool, input)
             s.promptId = str(dict["prompt_id"])
             // 許可の自動化（Permission Request Skip）がオンなら、ここで即座に許可を返す。
-            // 対象は「ツール実行の許可」だけ。質問は上で処理済みなので、この行より下には来ない
-            // ＝自動で答えることは絶対にない（必ず人間が読む）。
+            // 対象は「ツール実行の許可」だけ。質問と計画の実行確認は上で処理済みなので
+            // この行より下には来ない＝自動で答えることは絶対にない（必ず人間が読む）。
             if AppSettings.shared.skipPermissionRequests {
                 decisions[decisionKey(sid, s.promptId)] = HookDecision(sessionId: sid, value: "allow")
                 s.state = .working
@@ -743,7 +768,8 @@ final class SessionStore: ObservableObject {
             return "サブエージェントを実行中"
         case "TodoWrite":
             return "タスクリストを更新中"
-        case "ExitPlanMode", "EnterPlanMode":
+        case "EnterPlanMode":
+            // ExitPlanMode はここに来ない（applyPlanReview で「計画の承認待ち」になる）
             return "計画を作成中"
         default:
             return "\(tool) を実行中"
@@ -805,6 +831,35 @@ final class SessionStore: ObservableObject {
             return PendingQuestion(text: text, options: options)
         }
         return PendingQuestion(text: "エージェントからの質問", options: [])
+    }
+
+    /// 「計画の実行確認」をセッションに反映する（PreToolUse と PermissionRequest の両方から呼ばれる）。
+    /// 承認するのはそのAIの画面。ノッチは計画の冒頭と移動ボタンだけを出す
+    /// （全文が読めないノッチで承認させると、中身を読まずに実行されてしまうため）。
+    private func applyPlanReview(_ s: inout AgentSession, input: [String: Any], alreadyNotified: Bool) {
+        s.state = .waitingInput
+        s.question = parsePlan(input)
+        s.permission = nil
+        s.statusText = "計画の承認待ち"
+        s.acknowledged = false
+        s.hookControlled = false
+        s.awaitingHookDecision = false
+        // 同じ計画で2回鳴らさない（PreToolUse → PermissionRequest と続けて飛んでくるため）
+        if !alreadyNotified, !isMuted(s) { playSound("Ping") }
+    }
+
+    /// ExitPlanMode の `plan`（Markdown）から、見出しと本文の先頭数行を取り出す
+    private func parsePlan(_ input: [String: Any]) -> PendingQuestion {
+        let bullets = CharacterSet(charactersIn: "#*-・ 　")
+        let lines = str(input["plan"])
+            .split(separator: "\n")
+            .map { $0.trimmingCharacters(in: .whitespaces).trimmingCharacters(in: bullets) }
+            .filter { !$0.isEmpty }
+            .map { truncate($0, 60) }
+        guard let head = lines.first else {
+            return PendingQuestion(kind: .plan, text: "計画ができました", options: [])
+        }
+        return PendingQuestion(kind: .plan, text: head, options: Array(lines.dropFirst()))
     }
 
     // MARK: - ヘルパー

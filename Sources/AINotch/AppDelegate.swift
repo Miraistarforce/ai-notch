@@ -151,7 +151,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             menu.addItem(.separator())
             menu.addItem(NSMenuItem(title: "AI連携の設定を開く…", action: #selector(openSettings), keyEquivalent: ","))
             let skip = NSMenuItem(
-                title: "許可を自動で出す（質問は必ず自分で答える）",
+                title: "許可を自動で出す（質問と計画の承認は自分で）",
                 action: #selector(toggleSkipPermissions),
                 keyEquivalent: ""
             )
@@ -191,7 +191,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         alert.messageText = "ツール実行の許可を自動で出しますか？"
         alert.informativeText = """
         オンの間、AIからの許可要求（ファイル編集・コマンド実行など）はノッチが自動で許可します。確認は出ません。
-        AIからの質問は自動で答えないので、これまでどおり自分で読んで回答します。
+        AIからの質問と、プランモードの「この計画で進めてよいか」は自動で答えないので、これまでどおり自分で読んで決めます。
         """
         alert.addButton(withTitle: "自動で許可する")
         alert.addButton(withTitle: "キャンセル")
