@@ -533,7 +533,7 @@ final class SessionStore: ObservableObject {
             s.permission = nil
             s.question = nil
             s.acknowledged = false
-            if !isMuted(s) { playSound("Glass") }
+            if !isMuted(s) { playCompletionSound() }
             scheduleAutoAcknowledge(sid)
         case "SessionEnd":
             removeSession(id: sid)
@@ -552,7 +552,7 @@ final class SessionStore: ObservableObject {
             let st = str(dict["status"])
             s.statusText = st.isEmpty ? "完了 — クリックで移動" : st
             s.acknowledged = false
-            if !isMuted(s) { playSound("Glass") }
+            if !isMuted(s) { playCompletionSound() }
             scheduleAutoAcknowledge(sid)
         case "error":
             s.state = .error
@@ -889,7 +889,12 @@ final class SessionStore: ObservableObject {
     }
 
     private func playSound(_ name: String) {
-        NSSound(named: NSSound.Name(name))?.play()
+        SoundPlayer.play(name)
+    }
+
+    /// タスク完了の音（同梱mp3を小さめの音量で鳴らす）
+    private func playCompletionSound() {
+        SoundPlayer.playCompletion()
     }
 
     private func terminalName(_ termProgram: String, bundleId: String) -> String {

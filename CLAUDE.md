@@ -23,6 +23,7 @@
 | `Sources/AINotch/HookSetup.swift` | AI検出と各設定ファイルへのhook登録・解除（Codexのtrust書き込み含む） |
 | `Sources/AINotch/SettingsView.swift` | 連携設定ウィンドウ（メニューバーのClawdアイコンから開く） |
 | `Sources/AINotch/AppSettings.swift` | アプリ設定の永続化（UserDefaults）。いまは許可の自動化 `skipPermissionRequests` のみ |
+| `Sources/AINotch/SoundPlayer.swift` | 通知音の再生。完了音だけ同梱mp3（`Resources/Sounds/complete.mp3`）を小音量で鳴らす |
 | `Sources/AINotch/LoginItem.swift` | 自動起動＋クラッシュ時の自動復帰（launchd の LaunchAgent を生成・登録。起動引数 `--enable-login-item` / `--disable-login-item` にも対応） |
 | `Sources/AINotch/CrashLog.swift` | 未キャッチ例外の記録（`AINotchApplication.reportException` と `NSSetUncaughtExceptionHandler`）。`~/Library/Logs/AINotch/crash.log` |
 | `Sources/AINotch/SingleInstance.swift` | 二重起動の防止（先に動いていれば exit 0 で黙って終わる） |
@@ -41,6 +42,7 @@
 6. `~/.codex/config.toml` の notify は Claude Cowork が使用中。**上書き禁止**。
 7. このフォルダは独立gitリポジトリ。コミットはこの中で行う。
 8. 自動起動の登録先は**実行中の `.app` のパス**なので、`dist/` を移動・削除したら設定し直す（`make app` は同じパスに作り直すので影響なし）。ズレると設定画面が「登録されているパスが違います」と出す。
+9. 同梱リソース（いまは `Resources/Sounds/`）は**Makefileの `app` ターゲットがコピーする**もので、SwiftPMのresourcesではない。増やしたら `Makefile` にも `cp` を足す。`swift run` では `Bundle.main` から見えないので、読めなかったときのフォールバックを必ず用意する（完了音はシステム音 Glass に落ちる）。
 
 ## 常駐と自動復帰（launchd）
 

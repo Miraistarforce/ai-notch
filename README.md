@@ -17,7 +17,7 @@ AIの画面を開かなくても、ノッチにマウスを乗せるだけで **
 | ジャンプ (Jump) | 行クリックでそのセッションのターミナルへ移動。iTerm2 / Terminal.app は**該当タブまで正確にジャンプ**（Ghostty / Warp / VS Code / Cursor はアプリをアクティブ化） |
 | 自動オープン＋点滅 | 承認待ち＝**青点滅**、完了＝**緑点滅**（30秒）、エラー＝**赤点滅**。いずれも自動でパネルが開く（完了は8秒後に自動で閉じる） |
 | エラー検知 | `notch-run` の異常終了、明示的なerrorイベント、**実行中のまま10分間無応答**（API制限などの可能性）を赤点滅で通知 |
-| サウンド | 許可待ちで Ping、完了で Glass、エラーで Basso が鳴る |
+| サウンド | 許可待ちで Ping、**タスク完了で同梱の効果音**（小さめの音量）、エラーで Basso が鳴る。完了音は差し替え可能 |
 | Clawd | 閉じたノッチの左側を小さなClawd（[clawd-on-desk](https://github.com/rullerzhou-afk/clawd-on-desk) 風のカニ）がゆっくり歩き回る。エージェントが動いていない間は立ち止まる |
 | 連携設定 | メニューバーの**Clawdアイコンをクリック**すると設定画面が開き、検出されたAI（Claude Code / Codex / Gemini CLI）をトグルでオン/オフできる。設定ファイルへの登録・解除は自動（バックアップ付き） |
 
@@ -72,6 +72,16 @@ open dist/AINotch.app --args --disable-login-item   # オフ
 make restart                                        # いま反映させたいとき
 make uninstall-agent                                # 解除
 ```
+
+### 完了音
+
+タスクが完了した瞬間（Claude Code等の `Stop` hook、汎用イベントの `done`）に、アプリ同梱の効果音を**小さな音量で**鳴らす。許可待ち（Ping）とエラー（Basso）はmacOSのシステム音のまま。
+
+- 音源は `Resources/Sounds/complete.mp3`。**このパスに同じ名前で別のmp3を置いて `make run` すれば差し替えられる**
+- 音量は `SoundPlayer.completionVolume`（既定 `0.2` ＝システム音量に対して2割）。うるさければここを下げる
+- 複数セッションが同時に完了しても音は重ならない（1つのインスタンスを使い回し、頭から鳴り直す）
+- フォルダを**休止中（1秒長押し）にしたセッションは鳴らない**
+- ファイルが読めないとき（`swift run` など `.app` バンドル外での起動）は従来どおり Glass にフォールバックする。確認は `curl http://127.0.0.1:43110/debug` の `completionSoundLoaded`
 
 ## 各エージェントとの連携方法
 

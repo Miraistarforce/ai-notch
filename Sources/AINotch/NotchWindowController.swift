@@ -498,6 +498,8 @@ final class NotchWindowController {
             // true ならツール実行の許可をノッチが自動で許可している（質問は対象外）
             "skipPermissionRequests": AppSettings.shared.skipPermissionRequests,
             "autoLaunchEnabled": LoginItem.shared.isEnabled,
+            // 完了音のmp3がバンドルから読めているか。false ならシステム音(Glass)に落ちている
+            "completionSoundLoaded": SoundPlayer.hasCompletionSound,
             // AINotchApplication になっていれば、AppKit内で投げられた例外が
             // reportException 経由で crash.log に残る
             "applicationClass": NSApp?.className ?? "nil",
