@@ -23,6 +23,7 @@
 | `Sources/AINotch/HookSetup.swift` | AI検出と各設定ファイルへのhook登録・解除（Codexのtrust書き込み含む） |
 | `Sources/AINotch/SettingsView.swift` | 連携設定ウィンドウ（メニューバーのClawdアイコンから開く） |
 | `Sources/AINotch/AppSettings.swift` | アプリ設定の永続化（UserDefaults）。いまは許可の自動化 `skipPermissionRequests` のみ |
+| `Sources/AINotch/WiFiPlace.swift` | つないでいるWi-Fiから**いまいる場所**を出す（CoreLocationで許可を取り、CoreWLANでSSIDを読む）。SSID→場所名のルールと、ユーザーが付けた名前の保存もここ |
 | `Sources/AINotch/SoundPlayer.swift` | 通知音の再生。完了音だけ同梱mp3（`Resources/Sounds/complete.mp3`）を小音量で鳴らす |
 | `Sources/AINotch/LoginItem.swift` | 自動起動＋クラッシュ時の自動復帰（launchd の LaunchAgent を生成・登録。起動引数 `--enable-login-item` / `--disable-login-item` にも対応） |
 | `Sources/AINotch/CrashLog.swift` | 未キャッチ例外の記録（`AINotchApplication.reportException` と `NSSetUncaughtExceptionHandler`）。`~/Library/Logs/AINotch/crash.log` |
@@ -64,6 +65,18 @@ SwiftUIがグラフ更新 → **レイアウト中のウィンドウに `setNeed
 - 原因は**展開パネルの `ScrollView` が `.fixedSize(horizontal: false, vertical: true)` の内側にあったこと**。ScrollViewは「与えられた高さいっぱいに広がる」ビューなので、`fixedSize`（＝中身の理想の高さを教えて）と組み合わせると高さが相互参照になり、レイアウト中の再入が起きる。`TimelineView(.periodic(by: 1.4))` がリストごと1.4秒ごとに作り直すので、開いている間ずっとこのくじを引いていた。
 - **ノッチのパネルに ScrollView を置いてはいけない**。代わりに表示量を絞る：`ExpandedPanel.maxVisibleSessions`（4件）、`SessionRow.maxDiffLines`（6行）、詳細カードは**一度に1件だけ**展開（`detailId`）。あふれた分は件数で示す。
 - 表示量を増やすときは `GET /debug` の `naturalContentHeight`（中身が必要な高さ）と `maxPanelHeight`（枠）を比べる。`contentClipped: true` なら下が切れており、しかも `contentRect` が枠と一致してホバー判定が壊れる。実測値：4件・詳細1枚・差分6行で約690px、枠は780px。
+
+## いまの場所（Wi-Fi）
+
+`WiFiPlace` がSSIDから居場所を出す。`GET /place` と設定画面・右クリックメニューに表示し、`GET /debug` にも `wifiSSID` / `wifiPlace` / `locationAuthorized` が出る。
+
+- **macOS 14以降、現在のSSIDは位置情報の許可がないプロセスには伏せられる**。`CWInterface.ssid()` は nil を返し、CLIでも `ipconfig getsummary en0` は `SSID : <redacted>`、`networksetup -getairportnetwork en0` は接続中なのに「You are not associated with an AirPort network.」と答える。**これが「どのWi-Fiも認識できない」の正体**で、コード側のバグではない（2026-09-16に実測）。
+- 許可は `CLLocationManager.requestWhenInUseAuthorization()` で求める。`Info.plist` に `NSLocationWhenInUseUsageDescription`（macOS 11+）と `NSLocationUsageDescription`（旧キー）の**両方**を置いてある。**位置そのものは取らない**（`startUpdatingLocation` は呼ばない）。許可はSSIDの秘匿を外すためだけ。
+- **位置情報サービス自体がオフだと、プロンプトは出ずに `authorizationStatus` がいきなり `denied` になる**。この状態ではシステム設定の一覧にアプリが出てこないので、先に大元のスイッチを入れてもらう必要がある。「拒否された」と「サービスがオフ」は区別できないので、設定画面では両方を案内する。
+- 許可は**署名＋バンドルパス**に紐づく（`/var/db/locationd/clients.plist` に `BundlePath` と署名要件が記録される。このファイルは**root無しで読める**ので切り分けに使える）。`dist/` を移動すると許可し直し。`make` が Apple Development 証明書で署名するのでリビルドでは外れない。
+- SSIDの変化は `CWEventDelegate`（`.ssidDidChange` / `.powerDidChange`）で拾い、取りこぼし対策に15秒のタイマーとスリープ復帰（`didWakeNotification`）でも読み直す。**タイマーは `.common` モードに入れる**（メニュー表示中に止まるため。ゴースト監視タイマーと同じ理由）。
+- 場所名は「ユーザーが付けた名前（UserDefaults `wifiPlaceNames`）→ 組み込みルール（`WiFiPlace.rules` の部分一致）」の順で解決し、どちらにも当たらなければ**SSIDをそのまま出す**（「不明」で潰さない）。`rules` は上から順に評価するので、広いパターン（`wi2`）は必ず下に置く（`at_STARBUCKS_Wi2` は `starbucks` で当てたい）。
+- 許可を使わない逃げ道もある：`scutil` の `State:/Network/Interface/en0/AirPort` にある `CachedScanRecord`（bplist）には**素のSSIDが残っている**。権限不要だが非公式で、切替直後に古い値を返す恐れがあるため採用していない。
 
 ## イベントAPI（POST /event）
 

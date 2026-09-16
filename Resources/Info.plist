@@ -22,6 +22,10 @@
 	<true/>
 	<key>NSAppleEventsUsageDescription</key>
 	<string>ターミナルのタブ切り替えとキー送信のためにAppleScriptを使用します。</string>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>つないでいるWi-Fi（スタバ・自宅など）の名前を読んで、いまいる場所を表示するために使用します。macOS 14以降、この許可がないとWi-Fi名が伏せられます。位置そのものは取得しません。</string>
+	<key>NSLocationUsageDescription</key>
+	<string>つないでいるWi-Fi（スタバ・自宅など）の名前を読んで、いまいる場所を表示するために使用します。macOS 14以降、この許可がないとWi-Fi名が伏せられます。位置そのものは取得しません。</string>
 	<key>NSHighResolutionCapable</key>
 	<true/>
 </dict>

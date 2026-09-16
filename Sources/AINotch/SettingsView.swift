@@ -18,6 +18,7 @@ final class SettingsModel: ObservableObject {
     func refresh() {
         tools = HookSetup.shared.tools()
         skipPermissions = AppSettings.shared.skipPermissionRequests
+        WiFiPlace.shared.refresh()
         refreshLoginItem()
     }
 
@@ -59,7 +60,11 @@ final class SettingsModel: ObservableObject {
 /// このMacにインストールされているAI CLIを検出し、hook連携をオン/オフする。
 struct SettingsView: View {
     @ObservedObject var model: SettingsModel
+    @ObservedObject private var wifi = WiFiPlace.shared
     let port: UInt16
+
+    /// 「この場所の名前」の入力中の文字。保存するまでは登録済みの名前と別物
+    @State private var nameDraft = ""
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -93,6 +98,11 @@ struct SettingsView: View {
 
             Divider()
 
+            // いまの場所（Wi-Fi）
+            placeRow
+
+            Divider()
+
             // 許可の自動化
             skipPermissionsRow
 
@@ -122,6 +132,83 @@ struct SettingsView: View {
             .padding(.vertical, 12)
         }
         .frame(width: 400)
+    }
+
+    /// いまつないでいるWi-Fiから割り出した場所。
+    /// macOS 14以降、位置情報の許可がないとSSIDが伏せられ、どの店につないでも
+    /// 同じに見えてしまうので、未許可のあいだは許可への導線を出す。
+    private var placeRow: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 12) {
+                VStack(alignment: .leading, spacing: 3) {
+                    HStack(spacing: 6) {
+                        Text("いまの場所")
+                            .font(.system(size: 13, weight: .semibold))
+                        Text(wifi.label)
+                            .font(.system(size: 10.5, weight: .medium))
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 1.5)
+                            .background(Capsule().fill(Color.blue.opacity(0.16)))
+                            .foregroundStyle(.blue)
+                    }
+                    Text(wifi.ssid.map { "Wi-Fi: \($0)" } ?? "Wi-Fi名を読めていません")
+                        .font(.system(size: 10, design: .monospaced))
+                        .foregroundStyle(.tertiary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+                Spacer()
+                Button("更新") { wifi.refresh() }
+                    .font(.system(size: 11))
+            }
+
+            if wifi.isAuthorized {
+                if let ssid = wifi.ssid, !ssid.isEmpty {
+                    HStack(spacing: 8) {
+                        TextField("この場所の名前（自宅・実家など）", text: $nameDraft)
+                            .textFieldStyle(.roundedBorder)
+                            .font(.system(size: 11))
+                            .onSubmit { wifi.setName(nameDraft, for: ssid) }
+                        Button("保存") { wifi.setName(nameDraft, for: ssid) }
+                            .font(.system(size: 11))
+                    }
+                    Text("空のまま保存すると名前を消します。スタバ・マック・コメダ・シアトルズなどのチェーンは、名前を付けなくてもWi-Fi名から判別します。")
+                        .font(.system(size: 10.5))
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            } else {
+                Text("macOS 14以降、位置情報の許可がないとWi-Fi名は伏せられます（どこにいても同じに見えます）。許可して読むのはWi-Fi名だけで、位置そのものは取得しません。")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+                if wifi.authorization == .denied {
+                    // 位置情報サービス自体がオフのときも denied になる。
+                    // そのときは一覧にアプリが出ないので、先に大元のスイッチを入れてもらう。
+                    Text("「位置情報サービス」が丸ごとオフだと、一覧に AI Notch は出てきません。先に一番上のスイッチをオンにしてから、AI Notch をオンにしてください。")
+                        .font(.system(size: 10.5))
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                HStack(spacing: 8) {
+                    if wifi.authorization == .notDetermined {
+                        Button("位置情報を許可する") { wifi.requestAuthorizationIfNeeded() }
+                            .font(.system(size: 11))
+                    }
+                    Button("システム設定を開く") { wifi.openLocationSettings() }
+                        .font(.system(size: 11))
+                }
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
+        .onAppear { syncNameDraft() }
+        .onChange(of: wifi.ssid) { _, _ in syncNameDraft() }
+    }
+
+    /// 入力欄を、いまのSSIDに登録済みの名前に合わせる
+    private func syncNameDraft() {
+        nameDraft = wifi.ssid.flatMap { wifi.customNames[$0] } ?? ""
     }
 
     /// 許可の自動化トグル（Permission Request Skip）。

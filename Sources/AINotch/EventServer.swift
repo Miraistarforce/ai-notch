@@ -16,6 +16,8 @@ final class EventServer {
     var sessionsProvider: (() -> Data)?
     var debugProvider: (() -> Data)?
     var eventsProvider: (() -> Data)?
+    /// いまつないでいるWi-Fiから割り出した場所（GET /place）
+    var placeProvider: (() -> Data)?
     /// PermissionRequest hookがポーリングする決定の取得（"pending"/"allow"/"allow_always"/"deny"/"defer"）
     var decisionProvider: ((String) -> String)?
     /// 外部からの決定の書き込み（テスト・自動化用）
@@ -139,6 +141,9 @@ final class EventServer {
             return httpResponse(200, data: data)
         case ("GET", "/events"):
             let data = eventsProvider?() ?? Data("[]".utf8)
+            return httpResponse(200, data: data)
+        case ("GET", "/place"):
+            let data = placeProvider?() ?? Data("{}".utf8)
             return httpResponse(200, data: data)
         case ("GET", "/decision"):
             let sid = query["session"] ?? ""

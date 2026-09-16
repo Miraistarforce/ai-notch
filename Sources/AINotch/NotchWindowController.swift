@@ -503,6 +503,12 @@ final class NotchWindowController {
             // AINotchApplication になっていれば、AppKit内で投げられた例外が
             // reportException 経由で crash.log に残る
             "applicationClass": NSApp?.className ?? "nil",
+            // Wi-Fiから割り出した場所。locationAuthorized が false のあいだ
+            // macOSがSSIDを伏せるので wifiSSID は空になる（＝どこにいても同じに見える）
+            "wifiSSID": WiFiPlace.shared.ssid ?? "",
+            "wifiPlace": WiFiPlace.shared.label,
+            "locationAuthorized": WiFiPlace.shared.isAuthorized,
+            "locationAuthorization": WiFiPlace.authorizationText(WiFiPlace.shared.authorization),
             "frontBundleId": store.frontContext.bundleId,
             "frontWindowTitle": store.frontContext.windowTitle,
             "enterApprovalTarget": store.enterApprovalTarget?.id ?? "",

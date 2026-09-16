@@ -30,6 +30,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         windowController.show()
 
+        // つないでいるWi-Fiから場所を出す。macOS 14以降、位置情報の許可がないと
+        // SSIDが伏せられて全部同じに見えるので、ここで許可を求めて監視を始める
+        WiFiPlace.shared.start()
+
         // アプリ切り替えを監視：点滅中のセッションの画面を開いたら点滅を解除し、
         // 逆に画面から離れたら（未対応の承認待ちがあれば）パネルを開き直す
         NSWorkspace.shared.notificationCenter.addObserver(
@@ -79,6 +83,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             server.decisionSetter = { [weak self] sid, decision in
                 DispatchQueue.main.async { self?.store.decide(sid, decision: decision) }
+            }
+            server.placeProvider = {
+                var data = Data("{}".utf8)
+                DispatchQueue.main.sync { data = WiFiPlace.shared.placeJSON() }
+                return data
             }
             server.debugProvider = { [weak self] in
                 var data = Data("{}".utf8)
@@ -148,6 +157,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let info = NSMenuItem(title: "AI Notch — ポート \(port) で待受中", action: nil, keyEquivalent: "")
             info.isEnabled = false
             menu.addItem(info)
+            WiFiPlace.shared.refresh()
+            let place = NSMenuItem(title: "いまの場所: \(WiFiPlace.shared.label)", action: nil, keyEquivalent: "")
+            place.isEnabled = false
+            menu.addItem(place)
             menu.addItem(.separator())
             menu.addItem(NSMenuItem(title: "AI連携の設定を開く…", action: #selector(openSettings), keyEquivalent: ","))
             let skip = NSMenuItem(
