@@ -231,14 +231,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    /// メニューバー用のClawdアイコン（ClawdSpriteと同じピクセル配置）
-    private static func clawdMenuIcon(size: CGFloat = 18) -> NSImage {
-        let image = NSImage(size: NSSize(width: size, height: size), flipped: false) { _ in
-            let unit = size / 15.0
-            let body = NSColor(calibratedRed: 0xDE / 255.0, green: 0x88 / 255.0, blue: 0x6D / 255.0, alpha: 1)
-            func px(_ x: CGFloat, _ y: CGFloat, _ w: CGFloat, _ h: CGFloat, _ color: NSColor) {
+    /// メニューバー用のClawdアイコン（ClawdSpriteと同じピクセル配置）。黒いシルエットで、目は穴を開けて透過させる
+    private static func clawdMenuIcon(width: CGFloat = 18, height: CGFloat = 21) -> NSImage {
+        // キャンバス（＝アイコンサイズ）は変えず、描画だけ上にずらして見た目の位置を上げる
+        let verticalOffset: CGFloat = 2
+        let image = NSImage(size: NSSize(width: width, height: height), flipped: false) { _ in
+            let unitX = width / 15.0
+            let unitY = height / 15.0
+            let body = NSColor.black
+            func px(_ x: CGFloat, _ y: CGFloat, _ w: CGFloat, _ h: CGFloat, _ color: NSColor, operation: NSCompositingOperation = .sourceOver) {
                 color.setFill()
-                NSRect(x: x * unit, y: size - (y + h) * unit, width: w * unit, height: h * unit).fill()
+                NSRect(x: x * unitX, y: height - (y + h) * unitY + verticalOffset, width: w * unitX, height: h * unitY).fill(using: operation)
             }
             // 足4本
             px(3, 11, 1, 4, body)
@@ -250,9 +253,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // 腕
             px(0, 9, 2, 2, body)
             px(13, 9, 2, 2, body)
-            // 目
-            px(4, 8, 1, 2, .black)
-            px(10, 8, 1, 2, .black)
+            // 目（黒いシルエットに穴を開けて透過させる）
+            px(4, 8, 1, 2, .clear, operation: .clear)
+            px(10, 8, 1, 2, .clear, operation: .clear)
             return true
         }
         image.isTemplate = false
