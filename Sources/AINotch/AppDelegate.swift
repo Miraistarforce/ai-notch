@@ -187,12 +187,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             for mi in menu.items where mi.action != nil { mi.target = self }
             menu.popUp(positioning: nil, at: NSPoint(x: 0, y: sender.bounds.height + 6), in: sender)
         } else {
-            openSettings()
+            settingsController.toggle(anchor: sender)
         }
     }
 
     @objc private func openSettings() {
-        settingsController.open()
+        settingsController.open(anchor: statusItem?.button)
     }
 
     /// メニューからの許可の自動化オン/オフ。オンにするときだけ内容を確認する

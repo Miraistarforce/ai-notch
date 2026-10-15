@@ -15,9 +15,13 @@ final class SettingsModel: ObservableObject {
     // 許可の自動化（Permission Request Skip）
     @Published var skipPermissions = AppSettings.shared.skipPermissionRequests
 
+    // 完了音のオン/オフ
+    @Published var playCompletionSound = AppSettings.shared.playCompletionSound
+
     func refresh() {
         tools = HookSetup.shared.tools()
         skipPermissions = AppSettings.shared.skipPermissionRequests
+        playCompletionSound = AppSettings.shared.playCompletionSound
         WiFiPlace.shared.refresh()
         refreshLoginItem()
     }
@@ -25,6 +29,11 @@ final class SettingsModel: ObservableObject {
     func setSkipPermissions(_ on: Bool) {
         AppSettings.shared.skipPermissionRequests = on
         skipPermissions = on
+    }
+
+    func setPlayCompletionSound(_ on: Bool) {
+        AppSettings.shared.playCompletionSound = on
+        playCompletionSound = on
     }
 
     func toggle(_ id: String, _ on: Bool) {
@@ -105,6 +114,11 @@ struct SettingsView: View {
 
             // 許可の自動化
             skipPermissionsRow
+
+            Divider()
+
+            // 完了音
+            completionSoundRow
 
             Divider()
 
@@ -258,6 +272,29 @@ struct SettingsView: View {
         .padding(.vertical, 10)
     }
 
+    /// 完了音のトグル。許可待ち・エラーの音は対象外で、これまでどおり鳴る。
+    private var completionSoundRow: some View {
+        HStack(spacing: 12) {
+            VStack(alignment: .leading, spacing: 3) {
+                Text("完了時に音を鳴らす")
+                    .font(.system(size: 13, weight: .semibold))
+                Text("AIの作業が終わったときに小さな音で知らせます（許可待ち・エラーの音は常に鳴ります）")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer()
+            Toggle("", isOn: Binding(
+                get: { model.playCompletionSound },
+                set: { model.setPlayCompletionSound($0) }
+            ))
+            .toggleStyle(.switch)
+            .labelsHidden()
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
+    }
+
     /// ログイン時の自動起動トグル。Macを再起動してもノッチが出るようにする。
     private var launchAtLoginRow: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -374,10 +411,45 @@ final class SettingsWindowController {
         window.isReleasedWhenClosed = false
     }
 
-    func open() {
+    /// メニューバーのアイコンの真下に開く。
+    /// 毎回 `center()` していたため、閉じて開き直すたびに画面の真ん中に出ていた。
+    /// `anchor` が取れないとき（アイコンが隠れている等）だけ中央に出す。
+    func open(anchor: NSStatusBarButton?) {
         model.refresh()
-        window.center()
+        // 中身の高さが変わっていることがあるので、位置を決める前にサイズを確定させる
+        window.contentViewController?.view.layoutSubtreeIfNeeded()
+        if let anchor, let rect = Self.screenRect(of: anchor) {
+            place(below: rect)
+        } else {
+            window.center()
+        }
         NSApp.activate(ignoringOtherApps: true)
         window.makeKeyAndOrderFront(nil)
+    }
+
+    /// アイコンのクリックで開閉する。前面で開いているときだけ閉じ、
+    /// 他のウィンドウの裏にあるときは手前に出し直す。
+    func toggle(anchor: NSStatusBarButton?) {
+        if window.isVisible && window.isKeyWindow {
+            window.orderOut(nil)
+        } else {
+            open(anchor: anchor)
+        }
+    }
+
+    private static func screenRect(of button: NSStatusBarButton) -> NSRect? {
+        guard let win = button.window else { return nil }
+        return win.convertToScreen(button.convert(button.bounds, to: nil))
+    }
+
+    /// アイコンの下・中央揃えに置く。画面の右端/左端からはみ出す分は内側に寄せる。
+    private func place(below iconRect: NSRect) {
+        let screen = NSScreen.screens.first { $0.frame.intersects(iconRect) } ?? NSScreen.main
+        let size = window.frame.size
+        var x = (iconRect.midX - size.width / 2).rounded()
+        if let visible = screen?.visibleFrame {
+            x = min(max(x, visible.minX + 8), visible.maxX - size.width - 8)
+        }
+        window.setFrameTopLeftPoint(NSPoint(x: x, y: iconRect.minY - 6))
     }
 }

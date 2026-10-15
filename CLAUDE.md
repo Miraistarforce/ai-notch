@@ -21,8 +21,8 @@
 | `Sources/AINotch/TerminalControl.swift` | ジャンプとキー送信のAppleScript（送信先ウィンドウを特定できたときだけ送る） |
 | `Sources/AINotch/FrontWindow.swift` | アクセシビリティAPIでの**前面ウィンドウ特定**（タイトル取得・目的ウィンドウの前面化） |
 | `Sources/AINotch/HookSetup.swift` | AI検出と各設定ファイルへのhook登録・解除（Codexのtrust書き込み含む） |
-| `Sources/AINotch/SettingsView.swift` | 連携設定ウィンドウ（メニューバーのClawdアイコンから開く） |
-| `Sources/AINotch/AppSettings.swift` | アプリ設定の永続化（UserDefaults）。許可の自動化 `skipPermissionRequests` と完了音のオン/オフ `playCompletionSound`（既定オン。右クリックメニューで切替） |
+| `Sources/AINotch/SettingsView.swift` | 連携設定ウィンドウ（メニューバーのClawdアイコンから開く）。**アイコンの真下に開き**、前面で開いているときにアイコンを押すと閉じる。`center()` は位置が取れないときだけ |
+| `Sources/AINotch/AppSettings.swift` | アプリ設定の永続化（UserDefaults）。許可の自動化 `skipPermissionRequests` と完了音のオン/オフ `playCompletionSound`（既定オン。設定画面と右クリックメニューで切替） |
 | `Sources/AINotch/WiFiPlace.swift` | つないでいるWi-Fiから**いまいる場所**を出す（CoreLocationで許可を取り、CoreWLANでSSIDを読む）。SSID→場所名のルールと、ユーザーが付けた名前の保存もここ |
 | `Sources/AINotch/SoundPlayer.swift` | 通知音の再生。完了音だけ同梱mp3（`Resources/Sounds/complete.mp3`）を小音量で鳴らす |
 | `Sources/AINotch/LoginItem.swift` | 自動起動＋クラッシュ時の自動復帰（launchd の LaunchAgent を生成・登録。起動引数 `--enable-login-item` / `--disable-login-item` にも対応） |
