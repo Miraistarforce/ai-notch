@@ -30,7 +30,9 @@ enum SoundPlayer {
     /// タスク完了の音。
     /// インスタンスは1つだけ使い回すので、鳴っている途中に次の完了が来たら
     /// 重ならずに頭から鳴り直す（複数セッションが同時に終わっても音が割れない）。
+    /// メニューで完了音をオフにしているときは何も鳴らさない（システム音へのフォールバックもしない）。
     static func playCompletion() {
+        guard AppSettings.shared.playCompletionSound else { return }
         guard let sound = completionSound else {
             play("Glass")
             return

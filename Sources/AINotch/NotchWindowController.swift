@@ -500,6 +500,8 @@ final class NotchWindowController {
             "autoLaunchEnabled": LoginItem.shared.isEnabled,
             // 完了音のmp3がバンドルから読めているか。false ならシステム音(Glass)に落ちている
             "completionSoundLoaded": SoundPlayer.hasCompletionSound,
+            // false ならメニューで完了音をオフにしている
+            "playCompletionSound": AppSettings.shared.playCompletionSound,
             // AINotchApplication になっていれば、AppKit内で投げられた例外が
             // reportException 経由で crash.log に残る
             "applicationClass": NSApp?.className ?? "nil",

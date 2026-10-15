@@ -19,7 +19,19 @@ final class AppSettings: ObservableObject {
         }
     }
 
+    private static let completionSoundKey = "playCompletionSound"
+
+    /// タスク完了時に完了音を鳴らすか。
+    /// 既定はオン（未設定＝これまでどおり鳴らす）。許可待ち・エラーの音は対象外。
+    @Published var playCompletionSound: Bool {
+        didSet {
+            guard playCompletionSound != oldValue else { return }
+            UserDefaults.standard.set(playCompletionSound, forKey: Self.completionSoundKey)
+        }
+    }
+
     private init() {
         skipPermissionRequests = UserDefaults.standard.bool(forKey: Self.skipKey)
+        playCompletionSound = UserDefaults.standard.object(forKey: Self.completionSoundKey) as? Bool ?? true
     }
 }

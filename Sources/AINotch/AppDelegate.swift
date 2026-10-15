@@ -170,6 +170,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             )
             skip.state = AppSettings.shared.skipPermissionRequests ? .on : .off
             menu.addItem(skip)
+            let sound = NSMenuItem(title: "完了時に音を鳴らす", action: #selector(toggleCompletionSound), keyEquivalent: "")
+            sound.state = AppSettings.shared.playCompletionSound ? .on : .off
+            menu.addItem(sound)
             let login = NSMenuItem(title: "ログイン時に自動起動", action: #selector(toggleLaunchAtLogin), keyEquivalent: "")
             login.state = LoginItem.shared.isEnabled ? .on : .off
             login.isEnabled = LoginItem.shared.isAvailable
@@ -212,6 +215,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if alert.runModal() == .alertFirstButtonReturn {
             settings.skipPermissionRequests = true
         }
+    }
+
+    /// メニューからの完了音オン/オフ
+    @objc private func toggleCompletionSound() {
+        AppSettings.shared.playCompletionSound.toggle()
     }
 
     /// メニューからの自動起動オン/オフ。失敗（macOSの承認待ち等）は理由をアラートで出す。
